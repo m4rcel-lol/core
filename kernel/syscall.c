@@ -365,8 +365,10 @@ void syscall_init(void) {
     __asm__ volatile("wrmsr" : : "c"(MSR_EFER), "a"(lo), "d"(hi));
 
     /* STAR: selector bases
-     * bits 63:48 = sysret CS (user code = 0x18, but sysret loads +16 for 64-bit = 0x1B)
-     * bits 47:32 = syscall CS (kernel code = 0x08)
+     * GDT layout: 0x08=kernel code, 0x10=kernel data, 0x18=user data, 0x20=user code
+     * bits 47:32 = SYSCALL CS (kernel code = 0x08)
+     * bits 63:48 = SYSRET base: CPU loads CS=base+16, SS=base+8
+     *   → base=0x10 gives CS=0x20 (user code) and SS=0x18 (user data) ✓
      */
     wrmsr(MSR_STAR, ((uint64_t)0x0010 << 48) | ((uint64_t)0x0008 << 32));
 

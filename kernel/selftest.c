@@ -117,9 +117,6 @@ static void test_kthread(void) {
     kthread_ran = 0;
     int pid = proc_kthread(kthread_fn, NULL);
     ASSERT(pid > 0, "proc_kthread failed");
-    /* Let it run — in a non-preemptive test context, just mark it ready.
-       We can't yield in selftest easily, so we verify proc was created. */
-    ASSERT(pid > 0, "kthread pid invalid");
     /* Mark as passed since we verified creation */
 }
 

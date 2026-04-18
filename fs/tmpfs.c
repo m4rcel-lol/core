@@ -32,7 +32,6 @@ struct tmpfs_inode {
 };
 
 static struct tmpfs_inode tmpfs_inodes[TMPFS_MAX_INODES];
-static int tmpfs_inode_count __attribute__((unused)) = 0;
 
 static struct vfs_ops tmpfs_ops;
 

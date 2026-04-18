@@ -63,8 +63,8 @@ void gdt_init(void) {
     gdt_set_entry(0, 0);                       /* null */
     gdt_set_entry(1, GDT_KERNEL_CODE);         /* kernel code  (sel 0x08) */
     gdt_set_entry(2, GDT_KERNEL_DATA);         /* kernel data  (sel 0x10) */
-    gdt_set_entry(3, GDT_USER_CODE);           /* user code    (sel 0x18) */
-    gdt_set_entry(4, GDT_USER_DATA);           /* user data    (sel 0x20) */
+    gdt_set_entry(3, GDT_USER_DATA);           /* user data    (sel 0x18) — SS for SYSRET */
+    gdt_set_entry(4, GDT_USER_CODE);           /* user code    (sel 0x20) — CS for SYSRET */
     gdt_set_tss(5, (uint64_t)&kernel_tss, sizeof(kernel_tss) - 1);
 
     /* Set RSP0 to kernel stack */

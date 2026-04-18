@@ -1,6 +1,7 @@
 /* CORE Kernel — (c) CORE Project, MIT License */
 #include <core/types.h>
 #include <core/proc.h>
+#include <core/mm.h>
 #include <core/drivers.h>
 
 /* Round-robin scheduler with 3 priority queues */
@@ -66,9 +67,7 @@ void sched_yield(void) {
         current = next;
         /* Switch page tables */
         if (next->pml4) {
-            extern uint64_t vmm_get_kernel_pml4(void);
-            extern uint64_t VIRT_TO_PHYS_fn(uint64_t);
-            uint64_t phys = (uint64_t)next->pml4 - 0xFFFFFFFF80000000ULL;
+            uint64_t phys = VIRT_TO_PHYS((uint64_t)next->pml4);
             __asm__ volatile("movq %0, %%cr3" : : "r"(phys) : "memory");
         }
         switch_context(prev, next);

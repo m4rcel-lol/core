@@ -99,9 +99,9 @@ void kprintf(const char *fmt, ...) {
             break;
         }
         case 'z': {
-            /* %zu handled via length modifier above */
-            uint64_t v = va_arg(ap, size_t);
-            kput_uint(v, 10, width, pad);
+            /* %zu handled via length modifier above; bare %z is not a valid specifier */
+            kputc('%');
+            kputc('z');
             break;
         }
         case '%':

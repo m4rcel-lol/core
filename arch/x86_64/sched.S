@@ -82,11 +82,6 @@ switch_context:
     movq R14_OFF(%rsi),  %r14
     movq R15_OFF(%rsi),  %r15
 
-    /* Switch page tables if pml4 != 0 */
-    movq 8(%rsi), %rcx     /* pml4 is at offset 8 relative to... */
-    /* Actually pml4 offset: pid(4)+ppid(4)+state(4)+pad(4)+regs(144) = 160
-       Let's skip CR3 switch here; it's done in sched.c */
-
     movq RSP_OFF(%rsi),  %rsp
 
     /* Restore rflags */
