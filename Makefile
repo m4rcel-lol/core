@@ -38,6 +38,7 @@ C_SRCS := \
     kernel/main.c            \
     kernel/sched.c           \
     kernel/proc.c            \
+    kernel/elf.c             \
     kernel/mm.c              \
     kernel/vmm.c             \
     kernel/syscall.c         \

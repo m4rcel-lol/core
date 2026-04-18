@@ -51,6 +51,7 @@
 #define ECHILD   10
 #define ERANGE   34
 #define ENOSYS   38
+#define ENOEXEC  8
 
 struct stat {
     dev_t     st_dev;

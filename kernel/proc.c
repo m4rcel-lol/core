@@ -2,6 +2,7 @@
 #include <core/types.h>
 #include <core/proc.h>
 #include <core/mm.h>
+#include <core/elf.h>
 #include <core/drivers.h>
 #include <core/vfs.h>
 
@@ -151,21 +152,37 @@ extern size_t strlen(const char *s);
 extern void *memset(void *, int, size_t);
 extern char *strncpy(char *, const char *, size_t);
 
-static uint8_t init_kstack[4096] __attribute__((aligned(16)));
-
 int proc_execve(const char *path, char *argv[], char *envp[]) {
     (void)argv; (void)envp;
-    /* Minimal: create a new process entry that "runs" the given path */
+
+    /* Attempt to load the binary as an ELF64 executable */
+    uint64_t *pml4 = NULL;
+    uint64_t  sp   = 0;
+    uint64_t  entry = elf_load(path, &pml4, &sp);
+    if (!entry || !pml4) {
+        kprintf("CORE: exec(%s) failed: not a valid ELF64\n", path);
+        return -ENOEXEC;
+    }
+
     struct proc *p = proc_alloc();
     if (!p) return -ENOMEM;
+
     strncpy(p->name, path, PROC_NAME_LEN - 1);
-    p->priority = PRIO_NORMAL;
-    p->state    = PROC_READY;
-    p->ctx.rsp  = (uint64_t)&init_kstack[sizeof(init_kstack)];
-    p->ctx.rip  = 0; /* Would be loaded from ELF in a full implementation */
-    p->pml4     = vmm_get_kernel_pml4();
+    p->priority  = PRIO_NORMAL;
+    p->state     = PROC_READY;
+    p->pml4      = pml4;
+    p->fpu_used  = 0;
+
+    /* Zero all saved registers, then set entry and stack */
+    uint8_t *b = (uint8_t *)&p->ctx;
+    for (size_t i = 0; i < sizeof(p->ctx); i++) b[i] = 0;
+    p->ctx.rip    = entry;
+    p->ctx.rsp    = sp;
+    p->ctx.rflags = 0x202ULL;   /* IF=1, reserved bit 1 */
+
     sched_enqueue(p);
-    kprintf("CORE: PID %u launched (%s)\n", p->pid, path);
+    kprintf("CORE: PID %u exec(%s) entry=0x%llx\n",
+            p->pid, path, (unsigned long long)entry);
     return (int)p->pid;
 }
 
