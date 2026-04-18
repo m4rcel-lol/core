@@ -46,13 +46,14 @@ struct proc {
     struct sigaction sighandlers[64];
     int              exit_code;
     uint8_t          priority;
+    uint8_t          fpu_used;    /* lazy FPU: nonzero when FPU state is valid */
     char             name[PROC_NAME_LEN];
     struct proc     *next;
     uint8_t          kstack[4096 - sizeof(uint32_t)*2 - sizeof(enum proc_state)
                             - sizeof(struct regs) - sizeof(uint64_t *)
                             - sizeof(int)*FD_MAX - sizeof(uint64_t)*2
                             - sizeof(struct sigaction)*64 - sizeof(int)
-                            - sizeof(uint8_t) - PROC_NAME_LEN
+                            - sizeof(uint8_t)*2 - PROC_NAME_LEN
                             - sizeof(struct proc *)];
 };
 
@@ -64,6 +65,7 @@ void sys_exit(int code);
 int  sys_wait(int *status);
 int  proc_execve(const char *path, char *argv[], char *envp[]);
 int  proc_kthread(void (*fn)(void *), void *arg);
+uint8_t *proc_fpu_state(struct proc *p);
 
 extern struct proc *current;
 

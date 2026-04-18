@@ -106,8 +106,6 @@ Tested on:                         QEMU 8.x, x86_64
 Boot time (QEMU, -m 32M):          < 1 second
 Known limitations:
   - ELF loader for user-space binaries not implemented (exec maps to proc entry)
-  - COW page fault handler present in design but page fault path calls panic
   - ARM64 build requires aarch64-elf-gcc and separate Makefile target
   - Socket implementation (AF_UNIX) is in-kernel loopback only, no network stack
-  - FPU/XSAVE lazy context save not yet wired to #NM handler
 =========================

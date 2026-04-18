@@ -40,5 +40,6 @@ int   vmm_map(uint64_t *pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags);
 void  vmm_unmap(uint64_t *pml4, uint64_t vaddr);
 uint64_t *vmm_fork(uint64_t *pml4);
 uint64_t *vmm_get_kernel_pml4(void);
+int   vmm_handle_cow(uint64_t cr2, uint64_t err_code);
 
 #endif /* CORE_MM_H */

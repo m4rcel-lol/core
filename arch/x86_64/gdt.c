@@ -93,6 +93,17 @@ void gdt_init(void) {
 
     /* Load TSS selector (index 5, selector = 5*8 = 0x28) */
     __asm__ volatile("ltr %0" : : "r"((uint16_t)0x28));
+
+    /* Initialize x87 FPU and then set CR0.TS to arm lazy FPU context switching.
+     * The first FPU instruction executed by any task will trigger #NM (vec 7),
+     * which the IDT handler resolves by clearing TS and restoring the task's state. */
+    __asm__ volatile("fninit");
+    uint64_t cr0;
+    __asm__ volatile("movq %%cr0, %0" : "=r"(cr0));
+    cr0 |= (1ULL << 3);   /* set TS */
+    cr0 &= ~(1ULL << 2);  /* clear EM (no FPU emulation) */
+    cr0 |=  (1ULL << 1);  /* set MP (monitor co-processor) */
+    __asm__ volatile("movq %0, %%cr0" : : "r"(cr0) : "memory");
 }
 
 void gdt_set_kernel_stack(uint64_t rsp0) {

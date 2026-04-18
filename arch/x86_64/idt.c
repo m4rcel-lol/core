@@ -1,6 +1,8 @@
 /* CORE Kernel — (c) CORE Project, MIT License */
 #include <core/types.h>
 #include <core/drivers.h>
+#include <core/proc.h>
+#include <core/mm.h>
 
 #define IDT_ENTRIES 256
 #define IDT_FLAG_INTERRUPT 0x8E  /* P=1, DPL=0, type=interrupt gate */
@@ -85,20 +87,46 @@ static const char *exception_names[] = {
 static volatile uint64_t g_cr2;
 
 void exception_handler(uint64_t vec, uint64_t err, struct int_frame *frame) {
-    const char *name = (vec < 32) ? exception_names[vec] : "Unknown";
+    (void)frame;
+
+    /* --- #NM (Device Not Available) — lazy FPU context restore --- */
+    if (vec == 7) {
+        /* Clear CR0.TS to allow FPU use in the faulting task */
+        uint64_t cr0;
+        __asm__ volatile("movq %%cr0, %0" : "=r"(cr0));
+        cr0 &= ~(1ULL << 3);
+        __asm__ volatile("movq %0, %%cr0" : : "r"(cr0) : "memory");
+        if (current) {
+            uint8_t *fpu = proc_fpu_state(current);
+            if (current->fpu_used) {
+                __asm__ volatile("fxrstor (%0)" : : "r"(fpu) : "memory");
+            } else {
+                __asm__ volatile("fninit");
+                current->fpu_used = 1;
+            }
+        }
+        return; /* iretq back to the faulting instruction — now succeeds */
+    }
+
+    /* --- #PF (Page Fault) — attempt COW resolution first --- */
     if (vec == 14) {
-        /* Page fault — read CR2 */
         __asm__ volatile("movq %%cr2, %0" : "=r"(g_cr2));
+        if (vmm_handle_cow(g_cr2, err) == 0) {
+            return; /* COW resolved — iretq back to the faulting instruction */
+        }
         kprintf("PAGE FAULT: addr=0x%llx err=0x%llx rip=0x%llx\n",
                 (unsigned long long)g_cr2,
                 (unsigned long long)err,
                 (unsigned long long)frame->rip);
-    } else {
-        kprintf("EXCEPTION %llu (%s): err=0x%llx rip=0x%llx\n",
-                (unsigned long long)vec, name,
-                (unsigned long long)err,
-                (unsigned long long)frame->rip);
+        __asm__ volatile("cli; hlt");
+        while (1) {}
     }
+
+    const char *name = (vec < 32) ? exception_names[vec] : "Unknown";
+    kprintf("EXCEPTION %llu (%s): err=0x%llx rip=0x%llx\n",
+            (unsigned long long)vec, name,
+            (unsigned long long)err,
+            (unsigned long long)frame->rip);
     __asm__ volatile("cli; hlt");
     while(1) {}
 }

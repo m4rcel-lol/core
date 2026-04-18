@@ -1,6 +1,7 @@
 /* CORE Kernel — (c) CORE Project, MIT License */
 #include <core/types.h>
 #include <core/mm.h>
+#include <core/proc.h>
 #include <core/drivers.h>
 
 /* 4-level paging: PML4 → PDPT → PD → PT, 4 KB pages */
@@ -9,6 +10,7 @@
 #define PTE_WRITE    (1ULL << 1)
 #define PTE_USER     (1ULL << 2)
 #define PTE_HUGE     (1ULL << 7)
+#define PTE_COW      (1ULL << 9)   /* software: available bit used as COW marker */
 #define PTE_NX       (1ULL << 63)
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
 
@@ -92,9 +94,9 @@ uint64_t *vmm_get_kernel_pml4(void) {
 static void copy_pt(uint64_t *dst_pt, uint64_t *src_pt) {
     for (int i = 0; i < 512; i++) {
         if (src_pt[i] & PTE_PRESENT) {
-            /* Mark COW: clear write, set dirty bit pattern */
-            dst_pt[i] = (src_pt[i] & ~PTE_WRITE) | 0x200; /* bit 9 = COW marker */
-            src_pt[i] = (src_pt[i] & ~PTE_WRITE) | 0x200;
+            /* Mark COW: remove write permission, set COW marker bit */
+            dst_pt[i] = (src_pt[i] & ~PTE_WRITE) | PTE_COW;
+            src_pt[i] = (src_pt[i] & ~PTE_WRITE) | PTE_COW;
         }
     }
 }
@@ -150,4 +152,55 @@ uint64_t *vmm_fork(uint64_t *src_pml4) {
         new_pml4[i] = src_pml4[i];
     }
     return new_pml4;
+}
+
+/*
+ * vmm_handle_cow — called from the page-fault handler.
+ * Returns 0 if the fault was a COW write and has been resolved.
+ * Returns -1 if the fault is a genuine error (caller should panic/signal).
+ *
+ * A COW fault is identified by:
+ *   err_code bit 0 = 1 (present)
+ *   err_code bit 1 = 1 (write)
+ *   PTE bit 9      = 1 (our PTE_COW software marker)
+ */
+int vmm_handle_cow(uint64_t cr2, uint64_t err_code) {
+    /* Must be a write fault on a present page */
+    if ((err_code & 0x3) != 0x3) return -1;
+
+    extern struct proc *current;
+    if (!current || !current->pml4) return -1;
+
+    uint64_t *pml4 = current->pml4;
+    int pml4_idx = (int)((cr2 >> 39) & 0x1FF);
+    int pdpt_idx = (int)((cr2 >> 30) & 0x1FF);
+    int pd_idx   = (int)((cr2 >> 21) & 0x1FF);
+    int pt_idx   = (int)((cr2 >> 12) & 0x1FF);
+
+    if (!(pml4[pml4_idx] & PTE_PRESENT)) return -1;
+    uint64_t *pdpt = (uint64_t *)PHYS_TO_VIRT(pml4[pml4_idx] & PTE_ADDR_MASK);
+    if (!(pdpt[pdpt_idx] & PTE_PRESENT)) return -1;
+    uint64_t *pd = (uint64_t *)PHYS_TO_VIRT(pdpt[pdpt_idx] & PTE_ADDR_MASK);
+    if (!(pd[pd_idx] & PTE_PRESENT)) return -1;
+    uint64_t *pt = (uint64_t *)PHYS_TO_VIRT(pd[pd_idx] & PTE_ADDR_MASK);
+
+    uint64_t pte = pt[pt_idx];
+    if (!(pte & PTE_COW)) return -1;   /* not a COW page */
+
+    /* Allocate a new page and copy the content of the shared page */
+    void *new_page = pmm_alloc(0);
+    if (!new_page) return -1;
+
+    uint64_t old_phys = pte & PTE_ADDR_MASK;
+    uint8_t *src = (uint8_t *)PHYS_TO_VIRT(old_phys);
+    uint8_t *dst = (uint8_t *)PHYS_TO_VIRT(new_page);
+    for (size_t i = 0; i < PAGE_SIZE; i++) dst[i] = src[i];
+
+    /* Remap the page as writable and owned; clear the COW marker */
+    pt[pt_idx] = ((uint64_t)new_page & PTE_ADDR_MASK)
+               | (pte & ~PTE_ADDR_MASK & ~PTE_COW)
+               | PTE_WRITE;
+
+    __asm__ volatile("invlpg (%0)" : : "r"(cr2) : "memory");
+    return 0;
 }

@@ -8,11 +8,20 @@
 static struct proc proc_table[PROC_MAX];
 static uint8_t     proc_used[PROC_MAX];
 
+/* 512-byte FXSAVE buffers, one per process slot, 16-byte aligned */
+static uint8_t fpu_state_pool[PROC_MAX][512] __attribute__((aligned(16)));
+
 struct proc *current = NULL;
 static uint32_t next_pid = 0;
 
 extern uint64_t *vmm_get_kernel_pml4(void);
 extern uint64_t *vmm_fork(uint64_t *pml4);
+
+uint8_t *proc_fpu_state(struct proc *p) {
+    int idx = (int)(p - proc_table);
+    if (idx < 0 || idx >= PROC_MAX) return fpu_state_pool[0];
+    return fpu_state_pool[idx];
+}
 
 void proc_init(void) {
     for (int i = 0; i < PROC_MAX; i++) proc_used[i] = 0;

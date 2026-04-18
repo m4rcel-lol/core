@@ -65,6 +65,18 @@ void sched_yield(void) {
     if (next) {
         next->state = PROC_RUNNING;
         current = next;
+
+        /* FPU lazy save: if the outgoing task used FPU, save its state */
+        if (prev && prev->fpu_used) {
+            uint8_t *fpu = proc_fpu_state(prev);
+            __asm__ volatile("fxsave (%0)" : : "r"(fpu) : "memory");
+        }
+        /* Set CR0.TS so the next task's first FPU use triggers #NM */
+        uint64_t cr0;
+        __asm__ volatile("movq %%cr0, %0" : "=r"(cr0));
+        cr0 |= (1ULL << 3);
+        __asm__ volatile("movq %0, %%cr0" : : "r"(cr0) : "memory");
+
         /* Switch page tables */
         if (next->pml4) {
             uint64_t phys = VIRT_TO_PHYS((uint64_t)next->pml4);
