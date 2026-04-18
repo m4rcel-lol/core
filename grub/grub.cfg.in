@@ -1,0 +1,61 @@
+#
+# CORE grub.cfg template
+# Variables substituted by build-iso.sh:
+#   @@VERSION@@   — kernel version string
+#   @@ARCH@@      — target architecture
+#   @@DATE@@      — build date (YYYY-MM-DD)
+#   @@KERNEL@@    — path to kernel ELF inside ISO, e.g. /boot/core.elf
+#   @@INITRD@@    — path to initrd inside ISO, e.g. /boot/initrd.cpio.gz
+#   @@CMDLINE@@   — extra kernel command line
+#
+
+set default="0"
+set timeout=5
+set timeout_style=menu
+
+# ── GRUB serial console (optional; enabled when --serial is passed) ──────────
+# serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
+# terminal_input  serial
+# terminal_output serial
+
+# ── Theme / appearance ───────────────────────────────────────────────────────
+if [ -f /boot/grub/ascii.pf2 ]; then
+    loadfont /boot/grub/ascii.pf2
+fi
+set color_normal=cyan/black
+set color_highlight=white/blue
+set menu_color_normal=cyan/black
+set menu_color_highlight=white/blue
+
+# ── Menu entries ─────────────────────────────────────────────────────────────
+menuentry "CORE OS @@VERSION@@ (@@ARCH@@)" --class os --class core {
+    echo "Loading CORE kernel @@VERSION@@ (@@ARCH@@) built @@DATE@@..."
+    multiboot2 @@KERNEL@@ @@CMDLINE@@
+    echo "Loading initrd..."
+    module2 @@INITRD@@ initrd
+    boot
+}
+
+menuentry "CORE OS @@VERSION@@ — serial console" --class os {
+    echo "Loading CORE (serial mode)..."
+    multiboot2 @@KERNEL@@ console=ttyS0,115200 @@CMDLINE@@
+    module2 @@INITRD@@ initrd
+    boot
+}
+
+menuentry "CORE OS @@VERSION@@ — debug (verbose boot)" --class debug {
+    echo "Loading CORE (debug mode)..."
+    multiboot2 @@KERNEL@@ debug=1 @@CMDLINE@@
+    module2 @@INITRD@@ initrd
+    boot
+}
+
+menuentry "CORE OS — memory test (placeholder)" --class memtest {
+    echo "No memtest binary included in this build."
+    sleep 2
+    configfile /boot/grub/grub.cfg
+}
+
+menuentry "GRUB rescue shell" --class shell {
+    grub_rescue
+}

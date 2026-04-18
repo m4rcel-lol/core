@@ -1,0 +1,15 @@
+#!/bin/sh
+# CORE init — PID 1 placeholder
+# In a real system this would be replaced by a proper init binary.
+echo "CORE init started (PID $$)"
+
+# Mount virtual filesystems
+mount -t proc  proc  /proc  2>/dev/null || true
+mount -t sysfs sysfs /sys   2>/dev/null || true
+mount -t tmpfs tmpfs /tmp   2>/dev/null || true
+
+# Run rc script if present
+[ -x /etc/rc ] && /etc/rc
+
+# Start a shell on the console
+exec /bin/sh
