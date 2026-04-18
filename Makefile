@@ -63,15 +63,19 @@ S_SRCS := \
 else
 
 # ── x86_64 toolchain (default) ───────────────────────────────────────────────
-# Support both x86_64-elf-gcc (preferred) and x86_64-linux-gnu-gcc (fallback)
+# Prefer x86_64-elf-gcc, fall back to x86_64-linux-gnu-gcc, then native gcc
 ifneq ($(shell which x86_64-elf-gcc 2>/dev/null),)
 CC      := x86_64-elf-gcc
 LD      := x86_64-elf-ld
 OBJCOPY := x86_64-elf-objcopy
-else
+else ifneq ($(shell which x86_64-linux-gnu-gcc 2>/dev/null),)
 CC      := x86_64-linux-gnu-gcc
 LD      := x86_64-linux-gnu-ld
 OBJCOPY := x86_64-linux-gnu-objcopy
+else
+CC      := gcc
+LD      := ld
+OBJCOPY := objcopy
 endif
 AS      := $(CC)
 
