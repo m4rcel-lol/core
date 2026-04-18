@@ -75,11 +75,14 @@ typedef struct {
  * elf_load — load an ELF64 executable from the VFS into a fresh address space.
  *
  * @path:      VFS path to the ELF binary
+ * @argv:      NULL-terminated argument vector (may be NULL → argc=0)
+ * @envp:      NULL-terminated environment vector (may be NULL → empty envp)
  * @out_pml4:  set to the new process PML4 (virtual pointer, kernel-mapped)
  * @out_sp:    set to the initial user-space stack pointer (ABI-compliant frame)
  *
  * Returns the ELF entry-point virtual address on success, or 0 on failure.
  */
-uint64_t elf_load(const char *path, uint64_t **out_pml4, uint64_t *out_sp);
+uint64_t elf_load(const char *path, char *argv[], char *envp[],
+                  uint64_t **out_pml4, uint64_t *out_sp);
 
 #endif /* CORE_ELF_H */

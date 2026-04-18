@@ -318,3 +318,18 @@ int vfs_dupfd(int fd, int minfd) {
     }
     return -EMFILE;
 }
+
+int vfs_ftruncate(int fd, off_t length) {
+    if (fd < 0 || fd >= VFS_FD_MAX) return -EBADF;
+    struct file_desc *f = &fd_table[fd];
+    if (!f->inode) return -EBADF;
+    if (!f->inode->ops || !f->inode->ops->truncate) return -ENOSYS;
+    return f->inode->ops->truncate(f->inode, length);
+}
+
+int vfs_truncate(const char *path, off_t length) {
+    struct inode *ino = vfs_resolve(path);
+    if (!ino) return -ENOENT;
+    if (!ino->ops || !ino->ops->truncate) return -ENOSYS;
+    return ino->ops->truncate(ino, length);
+}

@@ -48,12 +48,14 @@ struct proc {
     uint8_t          priority;
     uint8_t          fpu_used;    /* lazy FPU: nonzero when FPU state is valid */
     char             name[PROC_NAME_LEN];
+    char             cwd[256];           /* per-process working directory */
     struct proc     *next;
     uint8_t          kstack[4096 - sizeof(uint32_t)*2 - sizeof(enum proc_state)
                             - sizeof(struct regs) - sizeof(uint64_t *)
                             - sizeof(int)*FD_MAX - sizeof(uint64_t)*2
                             - sizeof(struct sigaction)*64 - sizeof(int)
                             - sizeof(uint8_t)*2 - PROC_NAME_LEN
+                            - 256 /* cwd */
                             - sizeof(struct proc *)];
 };
 

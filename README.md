@@ -105,12 +105,15 @@ Makefile       — Build system
 MIT License — (c) CORE Project
 
 === CORE BUILD REPORT ===
-Estimated uncompressed ELF size:   ~300 KB
-Estimated compressed image size:   ~95 KB
+Estimated uncompressed ELF size:   ~330 KB
+Estimated compressed image size:   ~100 KB
 Estimated RAM at idle boot:        ~2 MB
-Syscall table completeness:        40/40 (100%)
+Syscall table completeness:        43/43 (100%)
 fcntl commands:                    F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL
 ioctl requests:                    TCGETS, TCSETS/W/F, TCFLSH, TIOCGWINSZ, TIOCSWINSZ, FIONREAD, TIOCGPGRP, TIOCSPGRP
+New syscalls:                      select(2), ftruncate(2), truncate(2)
+Per-process cwd:                   yes (char cwd[256] in struct proc; fork copies; init "/")
+execve argv/envp:                  full System V AMD64 ABI stack frame (strings, pointers, auxv AT_PAGESZ)
 Tested on:                         QEMU 8.x, x86_64
 Boot time (QEMU, -m 32M):          < 1 second
 Known limitations:

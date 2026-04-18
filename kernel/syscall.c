@@ -176,27 +176,28 @@ static uint64_t do_sys_rename(struct regs *r) {
     return (uint64_t)(int64_t)vfs_rename((const char *)r->rdi, (const char *)r->rsi);
 }
 
-static char cwd[256] = "/";
-
 static uint64_t do_sys_chdir(struct regs *r) {
     const char *path = (const char *)r->rdi;
     struct inode *ino = vfs_resolve(path);
     if (!ino) return (uint64_t)(int64_t)-ENOENT;
     if (!S_ISDIR(ino->mode)) return (uint64_t)(int64_t)-ENOTDIR;
+    if (!current) return (uint64_t)(int64_t)-EINVAL;
     extern size_t strlen(const char *);
     extern char *strncpy(char *, const char *, size_t);
-    strncpy(cwd, path, sizeof(cwd) - 1);
+    strncpy(current->cwd, path, 255);
+    current->cwd[255] = '\0';
     return 0;
 }
 
 static uint64_t do_sys_getcwd(struct regs *r) {
     char *buf = (char *)r->rdi;
     size_t len = r->rsi;
+    if (!current || !buf || !len) return (uint64_t)(int64_t)-EINVAL;
     extern size_t strlen(const char *);
-    size_t cwdlen = strlen(cwd);
+    size_t cwdlen = strlen(current->cwd);
     if (len < cwdlen + 1) return (uint64_t)(int64_t)-ERANGE;
     extern char *strncpy(char *, const char *, size_t);
-    strncpy(buf, cwd, len);
+    strncpy(buf, current->cwd, len);
     return 0;
 }
 
@@ -544,6 +545,129 @@ static uint64_t do_sys_reboot(struct regs *r) {
     return 0;
 }
 
+/*
+ * sys_select — synchronous I/O multiplexing.
+ *
+ * For each fd in [0, nfds) the function tests:
+ *   read-ready:  regular file always ready; pipe read-end ready if count > 0;
+ *                AF_UNIX socket ready if rbuf_len > 0.
+ *   write-ready: regular file and pipe write-end always ready (no back-pressure
+ *                modelled beyond PIPE_BUF_SIZE, which is checked elsewhere).
+ *
+ * If no fd is immediately ready and timeout != NULL and timeout has a non-zero
+ * duration, the caller sleeps for that duration (or at least 10 ms, one tick)
+ * before performing one final check.  A zero timeout (poll) returns immediately.
+ *
+ * exceptfds is always cleared; the kernel raises no out-of-band conditions.
+ *
+ * Returns the total number of ready descriptors, or -errno on error.
+ */
+static int fd_is_read_ready(int fd) {
+    struct file_desc *fdp = vfs_get_fd(fd);
+    if (!fdp) return 0;
+    /* Pipe: ready if data available */
+    if (fdp->is_pipe && fdp->pipe_ptr) {
+        struct pipe *p = (struct pipe *)fdp->pipe_ptr;
+        if (p->count > 0) return 1;
+        if (p->write_closed) return 1;   /* EOF is readable */
+        return 0;
+    }
+    /* Socket: ready if buffer has data or peer closed */
+    int sidx = sock_idx(fd);
+    if (sidx >= 0) {
+        return (socks[sidx].rbuf_len > 0 || socks[sidx].eof) ? 1 : 0;
+    }
+    /* Regular file / directory: always ready */
+    return 1;
+}
+
+static int fd_is_write_ready(int fd) {
+    struct file_desc *fdp = vfs_get_fd(fd);
+    if (!fdp) return 0;
+    /* Pipe: ready if there is space and read-end is still open */
+    if (fdp->is_pipe && fdp->pipe_ptr) {
+        struct pipe *p = (struct pipe *)fdp->pipe_ptr;
+        if (p->read_closed) return 0;   /* SIGPIPE territory */
+        return (p->count < PIPE_BUF_SIZE) ? 1 : 0;
+    }
+    /* Socket: always consider writable (no send-buffer limit modelled) */
+    int sidx = sock_idx(fd);
+    if (sidx >= 0) {
+        return (socks[sidx].peer >= 0) ? 1 : 0;
+    }
+    /* Regular file: always ready */
+    return 1;
+}
+
+int sys_select(int nfds, fd_set *readfds, fd_set *writefds,
+               fd_set *exceptfds, struct timeval *timeout) {
+    if (nfds < 0 || nfds > FD_SETSIZE) return -EINVAL;
+
+    /* Clear exceptfds — no OOB data in this kernel */
+    if (exceptfds) { FD_ZERO(exceptfds); }
+
+    /* Helper: scan all requested fds and fill in the ready ones */
+    int ready = 0;
+
+    /* We may need to loop twice (once now, once after sleeping). */
+    int attempts = 2;
+    uint32_t sleep_ms = 0;
+
+    if (timeout) {
+        if (timeout->tv_sec == 0 && timeout->tv_usec == 0) {
+            attempts = 1;   /* pure poll: single pass, no sleeping */
+        } else {
+            int64_t ms = timeout->tv_sec * 1000 + timeout->tv_usec / 1000;
+            sleep_ms = (ms > 0) ? (uint32_t)ms : 10U;
+        }
+    }
+
+    /* Snapshot the caller's fd_sets so we can overwrite in-place */
+    fd_set r_in = {0}, w_in = {0};
+    if (readfds)  r_in  = *readfds;
+    if (writefds) w_in  = *writefds;
+
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        if (attempt > 0 && sleep_ms > 0) {
+            timer_sleep_ms(sleep_ms);
+        }
+
+        ready = 0;
+        if (readfds)  { FD_ZERO(readfds);  }
+        if (writefds) { FD_ZERO(writefds); }
+
+        for (int fd = 0; fd < nfds; fd++) {
+            if (readfds && FD_ISSET(fd, &r_in)) {
+                if (fd_is_read_ready(fd)) { FD_SET(fd, readfds); ready++; }
+            }
+            if (writefds && FD_ISSET(fd, &w_in)) {
+                if (fd_is_write_ready(fd)) { FD_SET(fd, writefds); ready++; }
+            }
+        }
+
+        if (ready > 0 || attempts == 1) break;
+    }
+
+    return ready;
+}
+
+static uint64_t do_sys_select(struct regs *r) {
+    return (uint64_t)(int64_t)sys_select(
+        (int)r->rdi,
+        (fd_set *)r->rsi,
+        (fd_set *)r->rdx,
+        (fd_set *)r->r10,
+        (struct timeval *)r->r8);
+}
+
+static uint64_t do_sys_ftruncate(struct regs *r) {
+    return (uint64_t)(int64_t)vfs_ftruncate((int)r->rdi, (off_t)r->rsi);
+}
+
+static uint64_t do_sys_truncate(struct regs *r) {
+    return (uint64_t)(int64_t)vfs_truncate((const char *)r->rdi, (off_t)r->rsi);
+}
+
 typedef uint64_t (*syscall_fn_t)(struct regs *r);
 
 static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
@@ -587,6 +711,9 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     [SYS_IOCTL]       = do_sys_ioctl,
     [SYS_FCNTL]       = do_sys_fcntl,
     [SYS_REBOOT]      = do_sys_reboot,
+    [SYS_SELECT]      = do_sys_select,
+    [SYS_FTRUNCATE]   = do_sys_ftruncate,
+    [SYS_TRUNCATE]    = do_sys_truncate,
 };
 
 /* MSR addresses for SYSCALL/SYSRET */

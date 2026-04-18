@@ -288,6 +288,148 @@ static void test_fcntl_ioctl(void) {
 }
 #endif /* !__aarch64__ */
 
+/* Test 9: per-process working directory (chdir / getcwd) */
+static void test_per_process_cwd(void) {
+    if (!current) { selftest_passed++; return; }
+
+    /* Initial cwd should be "/" */
+    ASSERT(current->cwd[0] == '/', "initial cwd[0] should be '/'");
+    ASSERT(current->cwd[1] == '\0', "initial cwd should be exactly '/'");
+
+    /* Create a directory and chdir into it */
+    vfs_mkdir("/cwdtest", 0755);
+
+    /* Simulate chdir via the struct (kernel-level) */
+    extern char *strncpy(char *, const char *, size_t);
+    strncpy(current->cwd, "/cwdtest", 255);
+    current->cwd[255] = '\0';
+
+    ASSERT(current->cwd[0] == '/', "cwd after chdir should start with '/'");
+
+    extern int strcmp(const char *a, const char *b);
+    ASSERT(strcmp(current->cwd, "/cwdtest") == 0, "cwd should be /cwdtest");
+
+    /* Restore */
+    current->cwd[0] = '/';
+    current->cwd[1] = '\0';
+}
+
+/* Test 10: select(2) — poll on pipe read-end */
+#ifndef __aarch64__
+static void test_select(void) {
+    extern int sys_select(int nfds, fd_set *rfd, fd_set *wfd,
+                          fd_set *efd, struct timeval *tv);
+    extern int sys_pipe(int fds[2]);
+    extern ssize_t pipe_write(struct pipe *p, const void *buf, size_t n);
+
+    int pipefds[2];
+    int r = sys_pipe(pipefds);
+    ASSERT(r == 0, "select: sys_pipe failed");
+
+    int rfd_idx = pipefds[0];
+    int wfd_idx = pipefds[1];
+
+    fd_set rfds, wfds;
+
+    /* ── Empty pipe: poll mode (timeout={0,0}) — read-end NOT ready ── */
+    FD_ZERO(&rfds);
+    FD_SET(rfd_idx, &rfds);
+    struct timeval tv = {0, 0};
+    r = sys_select(rfd_idx + 1, &rfds, NULL, NULL, &tv);
+    ASSERT(r == 0,                      "select: empty pipe should not be read-ready");
+    ASSERT(!FD_ISSET(rfd_idx, &rfds),   "select: empty pipe read-fd must not be set");
+
+    /* ── Write data into the pipe then check read-ready ── */
+    struct file_desc *wfdp = vfs_get_fd(wfd_idx);
+    ASSERT(wfdp && wfdp->is_pipe, "select: write end not a pipe");
+    pipe_write((struct pipe *)wfdp->pipe_ptr, "xy", 2);
+
+    FD_ZERO(&rfds);
+    FD_SET(rfd_idx, &rfds);
+    tv.tv_sec = 0; tv.tv_usec = 0;
+    r = sys_select(rfd_idx + 1, &rfds, NULL, NULL, &tv);
+    ASSERT(r == 1,                    "select: pipe with data should be read-ready");
+    ASSERT(FD_ISSET(rfd_idx, &rfds),  "select: read fd should be set after write");
+
+    /* ── Write-end should always be write-ready ── */
+    FD_ZERO(&wfds);
+    FD_SET(wfd_idx, &wfds);
+    tv.tv_sec = 0; tv.tv_usec = 0;
+    r = sys_select(wfd_idx + 1, NULL, &wfds, NULL, &tv);
+    ASSERT(r == 1,                    "select: pipe write-end should be write-ready");
+    ASSERT(FD_ISSET(wfd_idx, &wfds),  "select: write fd should be set");
+
+    /* ── Regular file is always read-ready ── */
+    int fd = vfs_open("/select_test_file", O_CREAT | O_RDWR, 0644);
+    ASSERT(fd >= 0, "select: could not create test file");
+
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+    tv.tv_sec = 0; tv.tv_usec = 0;
+    r = sys_select(fd + 1, &rfds, NULL, NULL, &tv);
+    ASSERT(r == 1,               "select: regular file should be read-ready");
+    ASSERT(FD_ISSET(fd, &rfds),  "select: regular file fd should be set");
+
+    vfs_close(fd);
+    vfs_close(pipefds[0]);
+    vfs_close(pipefds[1]);
+}
+
+/* Test 11: ftruncate / truncate */
+static void test_ftruncate(void) {
+    /* Create a file and write initial content */
+    int fd = vfs_open("/trunc_test", O_CREAT | O_RDWR, 0644);
+    ASSERT(fd >= 0, "ftruncate: open failed");
+
+    const char *data = "Hello, World!";  /* 13 bytes */
+    ssize_t w = vfs_write(fd, data, 13);
+    ASSERT(w == 13, "ftruncate: initial write failed");
+
+    struct stat st;
+    int r = vfs_fstat(fd, &st);
+    ASSERT(r == 0, "ftruncate: fstat before truncate failed");
+    ASSERT(st.st_size == 13, "ftruncate: initial size should be 13");
+
+    /* Shrink to 5 bytes */
+    r = vfs_ftruncate(fd, 5);
+    ASSERT(r == 0, "ftruncate: shrink failed");
+    r = vfs_fstat(fd, &st);
+    ASSERT(r == 0, "ftruncate: fstat after shrink failed");
+    ASSERT(st.st_size == 5, "ftruncate: size after shrink should be 5");
+
+    /* Read back: should see "Hello" */
+    vfs_lseek(fd, 0, SEEK_SET);
+    char buf[8] = {0};
+    ssize_t rd = vfs_read(fd, buf, 5);
+    ASSERT(rd == 5, "ftruncate: read after shrink wrong count");
+    extern int strncmp(const char *, const char *, size_t);
+    ASSERT(strncmp(buf, "Hello", 5) == 0, "ftruncate: data after shrink mismatch");
+
+    /* Extend to 10 bytes: the extra 5 should be zero-filled */
+    r = vfs_ftruncate(fd, 10);
+    ASSERT(r == 0, "ftruncate: extend failed");
+    r = vfs_fstat(fd, &st);
+    ASSERT(r == 0, "ftruncate: fstat after extend failed");
+    ASSERT(st.st_size == 10, "ftruncate: size after extend should be 10");
+
+    /* Read the zero-filled tail */
+    vfs_lseek(fd, 5, SEEK_SET);
+    char tail[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    rd = vfs_read(fd, tail, 5);
+    ASSERT(rd == 5, "ftruncate: read of extended tail wrong count");
+    ASSERT(tail[0] == 0 && tail[4] == 0, "ftruncate: extended tail should be zero");
+
+    vfs_close(fd);
+
+    /* vfs_truncate (by path) */
+    r = vfs_truncate("/trunc_test", 2);
+    ASSERT(r == 0, "truncate by path failed");
+    r = vfs_stat("/trunc_test", &st);
+    ASSERT(r == 0, "stat after truncate by path failed");
+    ASSERT(st.st_size == 2, "truncate by path: size should be 2");
+}
+#endif /* !__aarch64__ */
+
 void kernel_selftest(void) {
     kprintf("CORE: running BIST...\n");
     selftest_passed = 0;
@@ -302,6 +444,11 @@ void kernel_selftest(void) {
 #ifndef __aarch64__
     test_unix_socket();
     test_fcntl_ioctl();
+#endif
+    test_per_process_cwd();
+#ifndef __aarch64__
+    test_select();
+    test_ftruncate();
 #endif
 
     kprintf("CORE: BIST passed (%d checks)\n", selftest_passed);

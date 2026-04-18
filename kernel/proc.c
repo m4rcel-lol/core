@@ -43,6 +43,8 @@ struct proc *proc_alloc(void) {
             p->priority = PRIO_NORMAL;
             p->pml4  = vmm_get_kernel_pml4();
             for (int fd = 0; fd < FD_MAX; fd++) p->fds[fd] = -1;
+            p->cwd[0] = '/';
+            p->cwd[1] = '\0';
             return p;
         }
     }
@@ -82,6 +84,9 @@ int sys_fork(void) {
 
     /* Copy name */
     for (int i = 0; i < PROC_NAME_LEN; i++) child->name[i] = current->name[i];
+
+    /* Copy working directory */
+    for (int i = 0; i < 256; i++) child->cwd[i] = current->cwd[i];
 
     /* Copy file descriptors */
     for (int fd = 0; fd < FD_MAX; fd++) child->fds[fd] = current->fds[fd];
@@ -153,12 +158,10 @@ extern void *memset(void *, int, size_t);
 extern char *strncpy(char *, const char *, size_t);
 
 int proc_execve(const char *path, char *argv[], char *envp[]) {
-    (void)argv; (void)envp;
-
     /* Attempt to load the binary as an ELF64 executable */
     uint64_t *pml4 = NULL;
     uint64_t  sp   = 0;
-    uint64_t  entry = elf_load(path, &pml4, &sp);
+    uint64_t  entry = elf_load(path, argv, envp, &pml4, &sp);
     if (!entry || !pml4) {
         kprintf("CORE: exec(%s) failed: not a valid ELF64\n", path);
         return -ENOEXEC;

@@ -70,6 +70,7 @@
 #define ENOEXEC  8
 #define ENOTCONN    107
 #define ECONNREFUSED 111
+#define EISCONN     106
 
 struct stat {
     dev_t     st_dev;
@@ -101,16 +102,17 @@ struct dirent {
 struct inode;
 
 struct vfs_ops {
-    int     (*open)   (struct inode *ino, int flags);
-    int     (*close)  (struct inode *ino);
-    ssize_t (*read)   (struct inode *ino, void *buf, size_t n, off_t off);
-    ssize_t (*write)  (struct inode *ino, const void *buf, size_t n, off_t off);
-    int     (*readdir)(struct inode *ino, struct dirent *buf, size_t count, off_t off);
-    int     (*stat)   (struct inode *ino, struct stat *st);
-    int     (*mkdir)  (struct inode *parent, const char *name, int mode);
-    int     (*unlink) (struct inode *parent, const char *name);
-    int     (*rename) (struct inode *old_dir, const char *old_name,
-                       struct inode *new_dir, const char *new_name);
+    int     (*open)     (struct inode *ino, int flags);
+    int     (*close)    (struct inode *ino);
+    ssize_t (*read)     (struct inode *ino, void *buf, size_t n, off_t off);
+    ssize_t (*write)    (struct inode *ino, const void *buf, size_t n, off_t off);
+    int     (*readdir)  (struct inode *ino, struct dirent *buf, size_t count, off_t off);
+    int     (*stat)     (struct inode *ino, struct stat *st);
+    int     (*mkdir)    (struct inode *parent, const char *name, int mode);
+    int     (*unlink)   (struct inode *parent, const char *name);
+    int     (*rename)   (struct inode *old_dir, const char *old_name,
+                         struct inode *new_dir, const char *new_name);
+    int     (*truncate) (struct inode *ino, off_t length);
     struct inode *(*lookup)(struct inode *parent, const char *name);
     struct inode *(*create)(struct inode *parent, const char *name, int mode);
 };
@@ -162,5 +164,7 @@ int   vfs_alloc_fd(struct inode *ino, int flags);
 int   vfs_alloc_fd_pipe(void *pipe_ptr, int flags);
 struct file_desc *vfs_get_fd(int fd);
 int   vfs_dupfd(int fd, int minfd);
+int   vfs_ftruncate(int fd, off_t length);
+int   vfs_truncate(const char *path, off_t length);
 
 #endif /* CORE_VFS_H */

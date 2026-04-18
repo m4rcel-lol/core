@@ -44,7 +44,10 @@
 #define SYS_IOCTL       37
 #define SYS_FCNTL       38
 #define SYS_REBOOT      39
-#define SYSCALL_COUNT   40
+#define SYS_SELECT      40
+#define SYS_FTRUNCATE   41
+#define SYS_TRUNCATE    42
+#define SYSCALL_COUNT   43
 
 struct regs;
 
@@ -82,5 +85,24 @@ struct sockaddr_un {
 #define SOCK_DGRAM  2
 
 #define REBOOT_MAGIC 0xDEADBEEF
+
+/*
+ * fd_set for select(2).
+ * Supports up to FD_SETSIZE file descriptors (one bit per fd).
+ * FD_SETSIZE must be a multiple of 64.
+ */
+#define FD_SETSIZE 256
+
+typedef struct {
+    uint64_t bits[FD_SETSIZE / 64];   /* 4 uint64_t = 256 bits */
+} fd_set;
+
+/* fd_set bit manipulation macros */
+#define FD_ZERO(s)    do { \
+    for (int _i = 0; _i < (int)(FD_SETSIZE/64); _i++) (s)->bits[_i] = 0; \
+} while (0)
+#define FD_SET(fd, s)   ((s)->bits[(fd)/64] |=  (1ULL << ((fd) % 64)))
+#define FD_CLR(fd, s)   ((s)->bits[(fd)/64] &= ~(1ULL << ((fd) % 64)))
+#define FD_ISSET(fd, s) (!!((s)->bits[(fd)/64] & (1ULL << ((fd) % 64))))
 
 #endif /* CORE_SYSCALL_H */

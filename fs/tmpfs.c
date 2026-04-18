@@ -213,6 +213,33 @@ static int tmpfs_rename(struct inode *old_dir, const char *old_name,
     return -ENOENT;
 }
 
+/*
+ * tmpfs_truncate — set the size of a regular file to exactly @length bytes.
+ *
+ * Extending:  ensures capacity and zero-fills the gap.
+ * Shrinking:  updates size; leaves the underlying allocation intact so that a
+ *             subsequent extension within the old capacity is free.
+ * Directories and special files are rejected with -EISDIR / -EINVAL.
+ */
+static int tmpfs_truncate(struct inode *ino, off_t length) {
+    struct tmpfs_inode *t = (struct tmpfs_inode *)ino->private;
+    if (!t) return -EBADF;
+    if (S_ISDIR(t->mode)) return -EISDIR;
+    if (length < 0) return -EINVAL;
+    if ((uint64_t)length > TMPFS_FILE_MAX) return -EFBIG;
+
+    if (length > t->size) {
+        /* Extend: ensure capacity, then zero the new region */
+        int r = tmpfs_ensure_cap(t, (size_t)length);
+        if (r < 0) return r;
+        memset(t->data + t->size, 0, (size_t)(length - t->size));
+    }
+    /* Shrink or no-op: just update size */
+    t->size    = length;
+    ino->size  = length;
+    return 0;
+}
+
 static struct inode *tmpfs_lookup(struct inode *parent, const char *name) {
     struct tmpfs_inode *pt = (struct tmpfs_inode *)parent->private;
     if (!pt || !S_ISDIR(pt->mode)) return NULL;
@@ -242,17 +269,18 @@ static struct inode *tmpfs_create(struct inode *parent, const char *name, int mo
 }
 
 static struct vfs_ops tmpfs_ops = {
-    .open    = tmpfs_open,
-    .close   = tmpfs_close,
-    .read    = tmpfs_read,
-    .write   = tmpfs_write,
-    .readdir = tmpfs_readdir,
-    .stat    = tmpfs_stat,
-    .mkdir   = tmpfs_mkdir,
-    .unlink  = tmpfs_unlink,
-    .rename  = tmpfs_rename,
-    .lookup  = tmpfs_lookup,
-    .create  = tmpfs_create,
+    .open     = tmpfs_open,
+    .close    = tmpfs_close,
+    .read     = tmpfs_read,
+    .write    = tmpfs_write,
+    .readdir  = tmpfs_readdir,
+    .stat     = tmpfs_stat,
+    .mkdir    = tmpfs_mkdir,
+    .unlink   = tmpfs_unlink,
+    .rename   = tmpfs_rename,
+    .truncate = tmpfs_truncate,
+    .lookup   = tmpfs_lookup,
+    .create   = tmpfs_create,
 };
 
 static struct inode *tmpfs_mount(void *data) {

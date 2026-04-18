@@ -9,6 +9,7 @@ extern void *memcpy(void *, const void *, size_t);
 extern void *memset(void *, int, size_t);
 extern int   vmm_map(uint64_t *pml4, uint64_t vaddr, uint64_t paddr, uint64_t flags);
 extern uint64_t *vmm_get_kernel_pml4(void);
+extern size_t strlen(const char *s);
 
 /* User-space stack configuration */
 #define ELF_STACK_PAGES  8U
@@ -88,7 +89,119 @@ static int map_segment(uint64_t *pml4, uint64_t vaddr, uint64_t memsz,
     return 0;
 }
 
-uint64_t elf_load(const char *path, uint64_t **out_pml4, uint64_t *out_sp) {
+/* Maximum number of argv/envp entries we will pass to the new process */
+#define ELF_MAX_ARGV 64
+#define ELF_MAX_ENVP 128
+
+/* Auxiliary-vector entry types (System V AMD64 ABI) */
+#define AT_NULL    0ULL
+#define AT_PAGESZ  6ULL
+
+/*
+ * elf_build_stack — write the System V AMD64 ABI initial stack frame into the
+ * topmost physical page of the user stack, which is mapped at
+ *   virtual = [USER_STACK_TOP - PAGE_SIZE, USER_STACK_TOP)
+ * i.e. the kernel can access it via PHYS_TO_VIRT(top_page_phys).
+ *
+ * Layout (from high to low within that one page):
+ *
+ *   [high]  envp string data (NUL-terminated, packed)
+ *           argv string data (NUL-terminated, packed)
+ *           padding to 8-byte alignment
+ *           AT_NULL  (two uint64_t = 0, 0)
+ *           AT_PAGESZ (two uint64_t: 6, PAGE_SIZE)
+ *           NULL     (envp[envc] terminator)
+ *           envp[envc-1] … envp[0]  (user virtual pointers)
+ *           NULL     (argv[argc] terminator)
+ *           argv[argc-1] … argv[0]  (user virtual pointers)
+ *           argc     (uint64_t)
+ *   [rsp]
+ *
+ * Returns the initial rsp (user virtual address of argc) or 0 on overflow.
+ */
+static uint64_t elf_build_stack(void *top_page_phys, char *argv[], char *envp[]) {
+    uint8_t *kpage = (uint8_t *)PHYS_TO_VIRT(top_page_phys);
+
+    /* Virtual address of the first byte of this page */
+    uint64_t page_virt = USER_STACK_TOP - PAGE_SIZE;
+
+    /* Count argc, envc (capped for safety) */
+    int argc = 0;
+    while (argv && argv[argc] && argc < ELF_MAX_ARGV) argc++;
+    int envc = 0;
+    while (envp && envp[envc] && envc < ELF_MAX_ENVP) envc++;
+
+    /*
+     * Write string data from the top of the page downward.
+     * str_off is the byte offset within kpage; it starts at PAGE_SIZE and
+     * decreases as we prepend each string.
+     */
+    size_t str_off = PAGE_SIZE;
+
+    /* User virtual pointers for each string */
+    uint64_t argv_va[ELF_MAX_ARGV + 1];
+    uint64_t envp_va[ELF_MAX_ENVP + 1];
+
+    for (int i = envc - 1; i >= 0; i--) {
+        size_t slen = strlen(envp[i]) + 1;
+        if (str_off < slen) return 0;   /* overflow */
+        str_off -= slen;
+        memcpy(kpage + str_off, envp[i], slen);
+        envp_va[i] = page_virt + str_off;
+    }
+
+    for (int i = argc - 1; i >= 0; i--) {
+        size_t slen = strlen(argv[i]) + 1;
+        if (str_off < slen) return 0;
+        str_off -= slen;
+        memcpy(kpage + str_off, argv[i], slen);
+        argv_va[i] = page_virt + str_off;
+    }
+
+    /*
+     * Align str_off down to 8 bytes — the pointer/word frame below must be
+     * 8-byte aligned (and ultimately 16-byte aligned at rsp).
+     */
+    str_off &= ~(size_t)7;
+
+    /*
+     * Words needed below the string area:
+     *   argc (1) + argv[0..argc] (argc+1) + envp[0..envc] (envc+1) +
+     *   auxv AT_PAGESZ (2) + auxv AT_NULL (2)  =  argc + envc + 7
+     */
+    size_t nwords  = (size_t)(argc + envc) + 7U;
+    size_t nbytes  = nwords * 8U;
+
+    if (str_off < nbytes) return 0;   /* overflow */
+    size_t frame_off = str_off - nbytes;
+
+    /* 16-byte align the frame (rsp must be 16-byte aligned at process entry) */
+    frame_off &= ~(size_t)15;
+    if (frame_off + nbytes > str_off) {
+        /* After alignment we might have slightly less room — recalculate */
+        if (frame_off < nbytes) return 0;
+    }
+
+    uint64_t *f = (uint64_t *)(kpage + frame_off);
+    size_t fi = 0;
+
+    f[fi++] = (uint64_t)argc;
+
+    for (int i = 0; i < argc; i++) f[fi++] = argv_va[i];
+    f[fi++] = 0ULL;   /* argv[argc] = NULL */
+
+    for (int i = 0; i < envc; i++) f[fi++] = envp_va[i];
+    f[fi++] = 0ULL;   /* envp[envc] = NULL */
+
+    /* Auxiliary vector */
+    f[fi++] = AT_PAGESZ; f[fi++] = PAGE_SIZE;
+    f[fi++] = AT_NULL;   f[fi++] = 0ULL;
+
+    return page_virt + frame_off;   /* initial rsp (points at argc) */
+}
+
+uint64_t elf_load(const char *path, char *argv[], char *envp[],
+                  uint64_t **out_pml4, uint64_t *out_sp) {
     int fd = vfs_open(path, O_RDONLY, 0);
     if (fd < 0) {
         kprintf("elf: cannot open %s\n", path);
@@ -182,22 +295,25 @@ uint64_t elf_load(const char *path, uint64_t **out_pml4, uint64_t *out_sp) {
     }
 
     /*
-     * Write a minimal System V AMD64 ABI initial stack frame.
-     * The stack pointer is placed 4 words below the top, 16-byte aligned.
-     * Layout at rsp:
-     *   [rsp+00]  argc  = 0
-     *   [rsp+08]  argv  = NULL  (argv[0] sentinel)
-     *   [rsp+16]  envp  = NULL  (envp[0] sentinel)
-     *   [rsp+24]  auxv  = 0     (AT_NULL)
+     * Build the System V AMD64 ABI initial stack frame in the topmost page.
+     * If argv is NULL (no arguments), synthesise a minimal frame with argc=0.
      */
-    uint64_t sp     = USER_STACK_TOP - 4ULL * sizeof(uint64_t);
-    size_t   sp_off = (size_t)(sp & (PAGE_SIZE - 1ULL));
+    static char *empty_argv[] = { NULL };
+    static char *empty_envp[] = { NULL };
+    char **av = (argv && argv[0]) ? argv : empty_argv;
+    char **ev = (envp && envp[0]) ? envp : empty_envp;
 
-    uint64_t *frame = (uint64_t *)((uint8_t *)PHYS_TO_VIRT(top_page_phys) + sp_off);
-    frame[0] = 0ULL;   /* argc */
-    frame[1] = 0ULL;   /* argv[0] = NULL */
-    frame[2] = 0ULL;   /* envp[0] = NULL */
-    frame[3] = 0ULL;   /* AT_NULL */
+    uint64_t sp = elf_build_stack(top_page_phys, av, ev);
+    if (!sp) {
+        /* Fallback: minimal 4-word frame (argc=0, argv=NULL, envp=NULL, AT_NULL) */
+        sp     = USER_STACK_TOP - 4ULL * sizeof(uint64_t);
+        size_t sp_off = (size_t)(sp & (PAGE_SIZE - 1ULL));
+        uint64_t *frame = (uint64_t *)((uint8_t *)PHYS_TO_VIRT(top_page_phys) + sp_off);
+        frame[0] = 0ULL;
+        frame[1] = 0ULL;
+        frame[2] = 0ULL;
+        frame[3] = 0ULL;
+    }
 
     *out_pml4 = pml4;
     *out_sp   = sp;
