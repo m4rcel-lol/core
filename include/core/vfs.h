@@ -52,6 +52,8 @@
 #define ERANGE   34
 #define ENOSYS   38
 #define ENOEXEC  8
+#define ENOTCONN    107
+#define ECONNREFUSED 111
 
 struct stat {
     dev_t     st_dev;

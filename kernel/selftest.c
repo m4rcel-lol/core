@@ -6,6 +6,7 @@
 #include <core/proc.h>
 #include <core/signal.h>
 #include <core/drivers.h>
+#include <core/syscall.h>
 
 extern void kernel_panic(const char *msg);
 extern int strcmp(const char *a, const char *b);
@@ -138,6 +139,61 @@ static void test_signal(void) {
     ASSERT(sigusr1_received == 1, "SIGUSR1 handler not called");
 }
 
+/* Test 7: AF_UNIX socket — bind/connect/send/recv/close
+ * (x86_64 only: ARM64 does not compile kernel/syscall.c) */
+#ifndef __aarch64__
+static void test_unix_socket(void) {
+    extern int     sys_socket_unix(int type);
+    extern int     sys_bind_unix(int fd, const char *path);
+    extern int     sys_connect_unix(int fd, const char *path);
+    extern ssize_t sys_send_unix(int fd, const void *buf, size_t n);
+    extern ssize_t sys_recv_unix(int fd, void *buf, size_t n);
+    extern void    sys_close_unix(int fd);
+
+    /* Create two SOCK_STREAM sockets */
+    int server = sys_socket_unix(1 /* SOCK_STREAM */);
+    ASSERT(server >= 100, "unix socket() server failed");
+
+    int client = sys_socket_unix(1 /* SOCK_STREAM */);
+    ASSERT(client >= 100, "unix socket() client failed");
+    ASSERT(client != server, "unix socket() returned same fd");
+
+    /* Bind the server to a path */
+    int r = sys_bind_unix(server, "/tmp/test.sock");
+    ASSERT(r == 0, "unix bind() failed");
+
+    /* Connect the client to the server path */
+    r = sys_connect_unix(client, "/tmp/test.sock");
+    ASSERT(r == 0, "unix connect() failed");
+
+    /* client sends to server: data arrives in server's rbuf */
+    const char *msg = "hello";
+    ssize_t w = sys_send_unix(client, msg, 5);
+    ASSERT(w == 5, "unix send() wrong count");
+
+    char buf[8] = {0};
+    ssize_t rd = sys_recv_unix(server, buf, 5);
+    ASSERT(rd == 5, "unix recv() wrong count");
+    ASSERT(strcmp(buf, "hello") == 0, "unix recv() data mismatch");
+
+    /* server sends reply back to client */
+    w = sys_send_unix(server, "world", 5);
+    ASSERT(w == 5, "unix send() reply wrong count");
+
+    char rbuf[8] = {0};
+    rd = sys_recv_unix(client, rbuf, 5);
+    ASSERT(rd == 5, "unix recv() reply wrong count");
+    ASSERT(strcmp(rbuf, "world") == 0, "unix recv() reply data mismatch");
+
+    /* close server: client should see EOF */
+    sys_close_unix(server);
+    rd = sys_recv_unix(client, buf, 1);
+    ASSERT(rd == 0, "unix EOF not signalled after peer close");
+
+    sys_close_unix(client);
+}
+#endif /* !__aarch64__ */
+
 void kernel_selftest(void) {
     kprintf("CORE: running BIST...\n");
     selftest_passed = 0;
@@ -149,6 +205,9 @@ void kernel_selftest(void) {
     test_pipe();
     test_kthread();
     test_signal();
+#ifndef __aarch64__
+    test_unix_socket();
+#endif
 
     kprintf("CORE: BIST passed (%d checks)\n", selftest_passed);
 }

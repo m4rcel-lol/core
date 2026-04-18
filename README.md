@@ -112,5 +112,5 @@ Syscall table completeness:        40/40 (100%)
 Tested on:                         QEMU 8.x, x86_64
 Boot time (QEMU, -m 32M):          < 1 second
 Known limitations:
-  - Socket implementation (AF_UNIX) is in-kernel loopback only, no network stack
+  - No outbound network stack (AF_UNIX sockets provide in-kernel IPC only)
 =========================

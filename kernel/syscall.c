@@ -26,6 +26,14 @@ extern int sys_kill(pid_t pid, int sig);
 /* __core_version is defined in boot.S */
 extern const char __core_version[];
 
+/* Forward declarations for AF_UNIX helpers defined later in this file */
+#define SOCK_FD_BASE  100
+#define SOCK_MAX      16
+static inline int sock_idx(int fd);
+static uint64_t unix_sock_send(int idx, const uint8_t *buf, size_t n);
+static uint64_t unix_sock_recv(int idx, uint8_t *buf, size_t n);
+static void     unix_sock_close(int idx);
+
 static uint64_t do_sys_exit(struct regs *r) {
     sys_exit((int)r->rdi);
     return 0;
@@ -82,11 +90,20 @@ static uint64_t do_sys_open(struct regs *r) {
 }
 
 static uint64_t do_sys_close(struct regs *r) {
-    return (uint64_t)(int64_t)vfs_close((int)r->rdi);
+    int fd = (int)r->rdi;
+    int sidx = sock_idx(fd);
+    if (sidx >= 0) {
+        unix_sock_close(sidx);
+        return 0;
+    }
+    return (uint64_t)(int64_t)vfs_close(fd);
 }
 
 static uint64_t do_sys_read(struct regs *r) {
     int fd = (int)r->rdi;
+    int sidx = sock_idx(fd);
+    if (sidx >= 0)
+        return unix_sock_recv(sidx, (uint8_t *)r->rsi, r->rdx);
     struct file_desc *fdp = vfs_get_fd(fd);
     if (fdp && fdp->is_pipe) {
         return (uint64_t)(int64_t)pipe_read((struct pipe *)fdp->pipe_ptr,
@@ -101,6 +118,9 @@ static uint64_t do_sys_read(struct regs *r) {
 
 static uint64_t do_sys_write(struct regs *r) {
     int fd = (int)r->rdi;
+    int sidx = sock_idx(fd);
+    if (sidx >= 0)
+        return unix_sock_send(sidx, (const uint8_t *)r->rsi, r->rdx);
     struct file_desc *fdp = vfs_get_fd(fd);
     if (fdp && fdp->is_pipe) {
         return (uint64_t)(int64_t)pipe_write((struct pipe *)fdp->pipe_ptr,
@@ -197,59 +217,144 @@ static uint64_t do_sys_brk(struct regs *r) {
     return (uint64_t)sys_brk((void *)r->rdi);
 }
 
-/* AF_UNIX socket state */
-#define SOCK_MAX 16
-struct sock_entry {
-    int used;
-    int domain, type;
-    uint8_t buf[4096];
-    size_t  buf_len;
+/* AF_UNIX socket implementation
+ *
+ * Each socket gets a file descriptor in the range [SOCK_FD_BASE,
+ * SOCK_FD_BASE + SOCK_MAX).  Sockets communicate via per-socket
+ * circular receive buffers: send() writes to the peer's rbuf,
+ * recv() reads from the caller's own rbuf.
+ *
+ * bind(fd, sockaddr_un, len)   — registers a path on the socket
+ * connect(fd, sockaddr_un, len)— links to the socket bound at that path
+ * send(fd, buf, n, flags)      — writes n bytes into the peer's buffer
+ * recv(fd, buf, n, flags)      — reads n bytes from the socket's buffer
+ * close(fd)                    — signals EOF to peer and frees the slot
+ */
+#define UNIX_BUF_SIZE 4096
+
+struct unix_sock {
+    int     used;
+    int     domain;                  /* AF_UNIX */
+    int     type;                    /* SOCK_STREAM or SOCK_DGRAM */
+    char    path[UNIX_PATH_MAX];     /* bound address; empty if unbound */
+    int     peer;                    /* socks[] index of connected peer, or -1 */
+    /* circular receive buffer */
+    uint8_t rbuf[UNIX_BUF_SIZE];
+    size_t  rbuf_head;               /* index of next byte to read */
+    size_t  rbuf_len;                /* bytes currently buffered */
+    int     eof;                     /* peer closed — no more incoming data */
 };
-static struct sock_entry socks[SOCK_MAX];
-static int next_sock_fd = 100;
+
+static struct unix_sock socks[SOCK_MAX];
+
+/* Return the socks[] index for socket fd, or -1 if invalid */
+static inline int sock_idx(int fd) {
+    int i = fd - SOCK_FD_BASE;
+    return (i >= 0 && i < SOCK_MAX && socks[i].used) ? i : -1;
+}
 
 static uint64_t do_sys_socket(struct regs *r) {
     int domain = (int)r->rdi, type = (int)r->rsi;
     if (domain != AF_UNIX) return (uint64_t)(int64_t)-EINVAL;
+    if (type != SOCK_STREAM && type != SOCK_DGRAM) return (uint64_t)(int64_t)-EINVAL;
     for (int i = 0; i < SOCK_MAX; i++) {
         if (!socks[i].used) {
-            socks[i].used   = 1;
-            socks[i].domain = domain;
-            socks[i].type   = type;
-            socks[i].buf_len = 0;
-            return (uint64_t)(next_sock_fd + i);
+            socks[i].used      = 1;
+            socks[i].domain    = domain;
+            socks[i].type      = type;
+            socks[i].path[0]   = '\0';
+            socks[i].peer      = -1;
+            socks[i].rbuf_head = 0;
+            socks[i].rbuf_len  = 0;
+            socks[i].eof       = 0;
+            return (uint64_t)(SOCK_FD_BASE + i);
         }
     }
     return (uint64_t)(int64_t)-EMFILE;
 }
 
-static uint64_t do_sys_bind(struct regs *r)    { (void)r; return 0; }
-static uint64_t do_sys_connect(struct regs *r) { (void)r; return 0; }
+static uint64_t do_sys_bind(struct regs *r) {
+    int idx = sock_idx((int)r->rdi);
+    if (idx < 0) return (uint64_t)(int64_t)-EBADF;
+    const struct sockaddr_un *sa = (const struct sockaddr_un *)r->rsi;
+    if (!sa || sa->sun_family != AF_UNIX) return (uint64_t)(int64_t)-EINVAL;
+    extern char *strncpy(char *, const char *, size_t);
+    strncpy(socks[idx].path, sa->sun_path, UNIX_PATH_MAX - 1);
+    socks[idx].path[UNIX_PATH_MAX - 1] = '\0';
+    return 0;
+}
 
-static uint64_t do_sys_send(struct regs *r) {
-    int fd = (int)r->rdi - next_sock_fd;
-    if (fd < 0 || fd >= SOCK_MAX || !socks[fd].used) return (uint64_t)(int64_t)-EBADF;
-    const uint8_t *buf = (const uint8_t *)r->rsi;
-    size_t n = r->rdx;
-    if (socks[fd].buf_len + n > sizeof(socks[fd].buf)) n = sizeof(socks[fd].buf) - socks[fd].buf_len;
-    extern void *memcpy(void *, const void *, size_t);
-    memcpy(socks[fd].buf + socks[fd].buf_len, buf, n);
-    socks[fd].buf_len += n;
+static uint64_t do_sys_connect(struct regs *r) {
+    int idx = sock_idx((int)r->rdi);
+    if (idx < 0) return (uint64_t)(int64_t)-EBADF;
+    const struct sockaddr_un *sa = (const struct sockaddr_un *)r->rsi;
+    if (!sa || sa->sun_family != AF_UNIX) return (uint64_t)(int64_t)-EINVAL;
+    extern int strcmp(const char *, const char *);
+    for (int i = 0; i < SOCK_MAX; i++) {
+        if (i != idx && socks[i].used && socks[i].path[0] != '\0' &&
+            strcmp(socks[i].path, sa->sun_path) == 0) {
+            socks[idx].peer = i;
+            socks[i].peer   = idx;
+            return 0;
+        }
+    }
+    return (uint64_t)(int64_t)-ECONNREFUSED;
+}
+
+/* Write n bytes from buf into the peer's circular receive buffer */
+static uint64_t unix_sock_send(int idx, const uint8_t *buf, size_t n) {
+    int peer = socks[idx].peer;
+    if (peer < 0) return (uint64_t)(int64_t)-ENOTCONN;
+    struct unix_sock *p = &socks[peer];
+    size_t avail = UNIX_BUF_SIZE - p->rbuf_len;
+    if (n > avail) n = avail;
+    for (size_t i = 0; i < n; i++) {
+        size_t pos = (p->rbuf_head + p->rbuf_len) % UNIX_BUF_SIZE;
+        p->rbuf[pos] = buf[i];
+        p->rbuf_len++;
+    }
     return (uint64_t)n;
 }
 
-static uint64_t do_sys_recv(struct regs *r) {
-    int fd = (int)r->rdi - next_sock_fd;
-    if (fd < 0 || fd >= SOCK_MAX || !socks[fd].used) return (uint64_t)(int64_t)-EBADF;
-    uint8_t *buf = (uint8_t *)r->rsi;
-    size_t n = r->rdx;
-    if (n > socks[fd].buf_len) n = socks[fd].buf_len;
-    extern void *memcpy(void *, const void *, size_t);
-    memcpy(buf, socks[fd].buf, n);
-    extern void *memmove(void *, const void *, size_t);
-    memmove(socks[fd].buf, socks[fd].buf + n, socks[fd].buf_len - n);
-    socks[fd].buf_len -= n;
+/* Read up to n bytes from the socket's own receive buffer */
+static uint64_t unix_sock_recv(int idx, uint8_t *buf, size_t n) {
+    struct unix_sock *s = &socks[idx];
+    if (s->rbuf_len == 0 && s->eof) return 0;          /* EOF */
+    if (s->rbuf_len == 0)           return (uint64_t)(int64_t)-EAGAIN;
+    if (n > s->rbuf_len) n = s->rbuf_len;
+    for (size_t i = 0; i < n; i++) {
+        buf[i] = s->rbuf[s->rbuf_head];
+        s->rbuf_head = (s->rbuf_head + 1) % UNIX_BUF_SIZE;
+        s->rbuf_len--;
+    }
     return (uint64_t)n;
+}
+
+static uint64_t do_sys_send(struct regs *r) {
+    int idx = sock_idx((int)r->rdi);
+    if (idx < 0) return (uint64_t)(int64_t)-EBADF;
+    return unix_sock_send(idx, (const uint8_t *)r->rsi, r->rdx);
+}
+
+static uint64_t do_sys_recv(struct regs *r) {
+    int idx = sock_idx((int)r->rdi);
+    if (idx < 0) return (uint64_t)(int64_t)-EBADF;
+    return unix_sock_recv(idx, (uint8_t *)r->rsi, r->rdx);
+}
+
+/* Release a socket slot, signalling EOF to the connected peer */
+static void unix_sock_close(int idx) {
+    int peer = socks[idx].peer;
+    if (peer >= 0 && socks[peer].used) {
+        socks[peer].eof  = 1;   /* peer will see 0-byte read after draining */
+        socks[peer].peer = -1;
+    }
+    socks[idx].used      = 0;
+    socks[idx].peer      = -1;
+    socks[idx].path[0]   = '\0';
+    socks[idx].rbuf_len  = 0;
+    socks[idx].rbuf_head = 0;
+    socks[idx].eof       = 0;
 }
 
 static uint64_t do_sys_uname(struct regs *r) {
@@ -389,4 +494,63 @@ uint64_t syscall_dispatch(struct regs *r) {
         return (uint64_t)(int64_t)-ENOSYS;
     }
     return syscall_table[num](r);
+}
+
+/* Kernel-callable wrappers for AF_UNIX sockets (used by BIST) */
+int sys_socket_unix(int type) {
+    for (int i = 0; i < SOCK_MAX; i++) {
+        if (!socks[i].used) {
+            socks[i].used      = 1;
+            socks[i].domain    = AF_UNIX;
+            socks[i].type      = type;
+            socks[i].path[0]   = '\0';
+            socks[i].peer      = -1;
+            socks[i].rbuf_head = 0;
+            socks[i].rbuf_len  = 0;
+            socks[i].eof       = 0;
+            return SOCK_FD_BASE + i;
+        }
+    }
+    return -EMFILE;
+}
+
+int sys_bind_unix(int fd, const char *path) {
+    int idx = sock_idx(fd);
+    if (idx < 0) return -EBADF;
+    extern char *strncpy(char *, const char *, size_t);
+    strncpy(socks[idx].path, path, UNIX_PATH_MAX - 1);
+    socks[idx].path[UNIX_PATH_MAX - 1] = '\0';
+    return 0;
+}
+
+int sys_connect_unix(int fd, const char *path) {
+    int idx = sock_idx(fd);
+    if (idx < 0) return -EBADF;
+    extern int strcmp(const char *, const char *);
+    for (int i = 0; i < SOCK_MAX; i++) {
+        if (i != idx && socks[i].used && socks[i].path[0] != '\0' &&
+            strcmp(socks[i].path, path) == 0) {
+            socks[idx].peer = i;
+            socks[i].peer   = idx;
+            return 0;
+        }
+    }
+    return -ECONNREFUSED;
+}
+
+ssize_t sys_send_unix(int fd, const void *buf, size_t n) {
+    int idx = sock_idx(fd);
+    if (idx < 0) return -EBADF;
+    return (ssize_t)unix_sock_send(idx, (const uint8_t *)buf, n);
+}
+
+ssize_t sys_recv_unix(int fd, void *buf, size_t n) {
+    int idx = sock_idx(fd);
+    if (idx < 0) return -EBADF;
+    return (ssize_t)unix_sock_recv(idx, (uint8_t *)buf, n);
+}
+
+void sys_close_unix(int fd) {
+    int idx = sock_idx(fd);
+    if (idx >= 0) unix_sock_close(idx);
 }
