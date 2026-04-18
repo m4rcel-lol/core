@@ -17,6 +17,22 @@
 #define O_APPEND  0x0400
 #define O_NONBLOCK 0x0800
 
+/* O_CLOEXEC flag (close file descriptor on exec) */
+#define O_CLOEXEC  0x80000
+
+/* Flags that may be changed via fcntl(F_SETFL) */
+#define SETFL_MASK (O_NONBLOCK | O_APPEND)
+
+/* fcntl(2) command codes */
+#define F_DUPFD    0    /* dup fd to lowest available fd >= arg */
+#define F_GETFD    1    /* get file descriptor flags */
+#define F_SETFD    2    /* set file descriptor flags */
+#define F_GETFL    3    /* get file status flags */
+#define F_SETFL    4    /* set file status flags */
+
+/* File descriptor flags (for F_GETFD / F_SETFD) */
+#define FD_CLOEXEC 1    /* close-on-exec */
+
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
@@ -145,5 +161,6 @@ int   vfs_dup2(int old, int new_fd);
 int   vfs_alloc_fd(struct inode *ino, int flags);
 int   vfs_alloc_fd_pipe(void *pipe_ptr, int flags);
 struct file_desc *vfs_get_fd(int fd);
+int   vfs_dupfd(int fd, int minfd);
 
 #endif /* CORE_VFS_H */

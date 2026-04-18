@@ -7,6 +7,7 @@
 #include <core/signal.h>
 #include <core/mm.h>
 #include <core/drivers.h>
+#include <core/tty.h>
 
 extern struct proc *current;
 extern int sys_fork(void);
@@ -378,8 +379,160 @@ static uint64_t do_sys_gettimeofday(struct regs *r) {
     return 0;
 }
 
-static uint64_t do_sys_ioctl(struct regs *r)  { (void)r; return 0; }
-static uint64_t do_sys_fcntl(struct regs *r)  { (void)r; return 0; }
+/*
+ * sys_fcntl — file-descriptor control
+ *
+ * Supported commands:
+ *   F_GETFL  — return file status flags (mode bits + O_NONBLOCK/O_APPEND)
+ *   F_SETFL  — update O_NONBLOCK and O_APPEND in flags
+ *   F_GETFD  — return FD_CLOEXEC if O_CLOEXEC is set on the descriptor
+ *   F_SETFD  — set or clear O_CLOEXEC on the descriptor
+ *   F_DUPFD  — duplicate fd to the lowest available fd >= arg
+ */
+int sys_fcntl(int fd, int cmd, int arg) {
+    struct file_desc *fdp = vfs_get_fd(fd);
+
+    switch (cmd) {
+    case F_GETFL:
+        if (!fdp) return -EBADF;
+        /* Return status flags; mask out the descriptor-level CLOEXEC bit */
+        return fdp->flags & ~O_CLOEXEC;
+
+    case F_SETFL:
+        if (!fdp) return -EBADF;
+        fdp->flags = (fdp->flags & ~SETFL_MASK) | (arg & SETFL_MASK);
+        return 0;
+
+    case F_GETFD:
+        if (!fdp) return -EBADF;
+        return (fdp->flags & O_CLOEXEC) ? FD_CLOEXEC : 0;
+
+    case F_SETFD:
+        if (!fdp) return -EBADF;
+        if (arg & FD_CLOEXEC)
+            fdp->flags |=  O_CLOEXEC;
+        else
+            fdp->flags &= ~O_CLOEXEC;
+        return 0;
+
+    case F_DUPFD:
+        return vfs_dupfd(fd, arg);
+
+    default:
+        return -EINVAL;
+    }
+}
+
+static uint64_t do_sys_fcntl(struct regs *r) {
+    return (uint64_t)(int64_t)sys_fcntl((int)r->rdi, (int)r->rsi, (int)r->rdx);
+}
+
+/*
+ * sys_ioctl — I/O device control
+ *
+ * Supported requests:
+ *   TCGETS       — fill *argp with sane cooked-mode termios defaults
+ *   TCSETS/W/F   — accept a new termios but ignore it (console is fixed)
+ *   TCFLSH       — flush queues (no-op)
+ *   TIOCGWINSZ   — return 80×25 terminal size
+ *   TIOCSWINSZ   — accept new window size but ignore it
+ *   FIONREAD     — return bytes available: pipe buffer count, socket rbuf_len,
+ *                  or 0 for other fds / tty
+ *   TIOCGPGRP    — return foreground process group (current PID or 1)
+ *   TIOCSPGRP    — set foreground process group (ignored)
+ */
+int sys_ioctl(int fd, unsigned long req, void *argp) {
+    extern void *memset(void *, int, size_t);
+
+    switch (req) {
+    /* ── Terminal attribute get ─────────────────────────────────────────── */
+    case TCGETS: {
+        struct termios *t = (struct termios *)argp;
+        if (!t) return -EINVAL;
+        memset(t, 0, sizeof(*t));
+        t->c_iflag = CORE_TERM_IFLAG;
+        t->c_oflag = CORE_TERM_OFLAG;
+        t->c_cflag = CORE_TERM_CFLAG;
+        t->c_lflag = CORE_TERM_LFLAG;
+        t->c_cc[VINTR]  = 0x03;  /* ^C */
+        t->c_cc[VQUIT]  = 0x1C;  /* ^\ */
+        t->c_cc[VERASE] = 0x7F;  /* DEL */
+        t->c_cc[VKILL]  = 0x15;  /* ^U */
+        t->c_cc[VEOF]   = 0x04;  /* ^D */
+        t->c_cc[VSUSP]  = 0x1A;  /* ^Z */
+        t->c_cc[VSTART] = 0x11;  /* ^Q */
+        t->c_cc[VSTOP]  = 0x13;  /* ^S */
+        t->c_cc[VMIN]   = 1;
+        t->c_cc[VTIME]  = 0;
+        return 0;
+    }
+
+    /* ── Terminal attribute set (cooked console — ignore) ───────────────── */
+    case TCSETS:
+    case TCSETSW:
+    case TCSETSF:
+        return 0;
+
+    /* ── Flush queues (no-op for our simple console) ────────────────────── */
+    case TCFLSH:
+        return 0;
+
+    /* ── Window size get ────────────────────────────────────────────────── */
+    case TIOCGWINSZ: {
+        struct winsize *ws = (struct winsize *)argp;
+        if (!ws) return -EINVAL;
+        ws->ws_row    = 25;
+        ws->ws_col    = 80;
+        ws->ws_xpixel = 0;
+        ws->ws_ypixel = 0;
+        return 0;
+    }
+
+    /* ── Window size set (ignore) ───────────────────────────────────────── */
+    case TIOCSWINSZ:
+        return 0;
+
+    /* ── Bytes available to read ────────────────────────────────────────── */
+    case FIONREAD: {
+        int *count = (int *)argp;
+        if (!count) return -EINVAL;
+        /* Socket fd */
+        int sidx = sock_idx(fd);
+        if (sidx >= 0) {
+            *count = (int)socks[sidx].rbuf_len;
+            return 0;
+        }
+        /* Pipe fd */
+        struct file_desc *fdp = vfs_get_fd(fd);
+        if (fdp && fdp->is_pipe && fdp->pipe_ptr) {
+            *count = (int)((struct pipe *)fdp->pipe_ptr)->count;
+            return 0;
+        }
+        /* Stdin / stdout / stderr and regular files: 0 */
+        *count = 0;
+        return 0;
+    }
+
+    /* ── Foreground process group get ───────────────────────────────────── */
+    case TIOCGPGRP: {
+        pid_t *pgid = (pid_t *)argp;
+        if (!pgid) return -EINVAL;
+        *pgid = current ? (pid_t)current->pid : 1;
+        return 0;
+    }
+
+    /* ── Foreground process group set (ignore) ──────────────────────────── */
+    case TIOCSPGRP:
+        return 0;
+
+    default:
+        return -EINVAL;
+    }
+}
+
+static uint64_t do_sys_ioctl(struct regs *r) {
+    return (uint64_t)(int64_t)sys_ioctl((int)r->rdi, r->rsi, (void *)r->rdx);
+}
 
 static uint64_t do_sys_reboot(struct regs *r) {
     if ((uint32_t)r->rdi != REBOOT_MAGIC) return (uint64_t)(int64_t)-EINVAL;

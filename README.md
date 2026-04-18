@@ -105,12 +105,15 @@ Makefile       — Build system
 MIT License — (c) CORE Project
 
 === CORE BUILD REPORT ===
-Estimated uncompressed ELF size:   ~280 KB
-Estimated compressed image size:   ~90 KB
+Estimated uncompressed ELF size:   ~300 KB
+Estimated compressed image size:   ~95 KB
 Estimated RAM at idle boot:        ~2 MB
 Syscall table completeness:        40/40 (100%)
+fcntl commands:                    F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL
+ioctl requests:                    TCGETS, TCSETS/W/F, TCFLSH, TIOCGWINSZ, TIOCSWINSZ, FIONREAD, TIOCGPGRP, TIOCSPGRP
 Tested on:                         QEMU 8.x, x86_64
 Boot time (QEMU, -m 32M):          < 1 second
 Known limitations:
   - No outbound network stack (AF_UNIX sockets provide in-kernel IPC only)
+  - Signal delivery invokes sa_handler in kernel context; user-space signal frames not yet implemented
 =========================

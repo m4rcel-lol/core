@@ -297,3 +297,24 @@ int vfs_dup2(int old, int new_fd) {
     fd_table[new_fd].refcount = 1;
     return new_fd;
 }
+
+/*
+ * vfs_dupfd — duplicate fd to the lowest available file descriptor >= minfd.
+ * Like dup(2) but starts the search at minfd (F_DUPFD semantics).
+ * The new descriptor inherits the file position but NOT the O_CLOEXEC flag.
+ */
+int vfs_dupfd(int fd, int minfd) {
+    if (fd < 0 || fd >= VFS_FD_MAX) return -EBADF;
+    struct file_desc *f = &fd_table[fd];
+    if (!f->inode && !f->is_pipe) return -EBADF;
+    if (minfd < 3) minfd = 3;   /* 0, 1, 2 are reserved for stdin/stdout/stderr */
+    for (int i = minfd; i < VFS_FD_MAX; i++) {
+        if (!fd_table[i].inode && !fd_table[i].is_pipe) {
+            fd_table[i]          = *f;
+            fd_table[i].refcount = 1;
+            fd_table[i].flags   &= ~O_CLOEXEC; /* F_DUPFD always clears CLOEXEC */
+            return i;
+        }
+    }
+    return -EMFILE;
+}

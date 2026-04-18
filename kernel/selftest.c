@@ -7,6 +7,7 @@
 #include <core/signal.h>
 #include <core/drivers.h>
 #include <core/syscall.h>
+#include <core/tty.h>
 
 extern void kernel_panic(const char *msg);
 extern int strcmp(const char *a, const char *b);
@@ -194,6 +195,99 @@ static void test_unix_socket(void) {
 }
 #endif /* !__aarch64__ */
 
+/* Test 8: fcntl + ioctl
+ * (x86_64 only: ARM64 does not compile kernel/syscall.c) */
+#ifndef __aarch64__
+static void test_fcntl_ioctl(void) {
+    extern int sys_fcntl(int fd, int cmd, int arg);
+    extern int sys_ioctl(int fd, unsigned long req, void *argp);
+    extern int sys_pipe(int fds[2]);
+    extern ssize_t pipe_write(struct pipe *p, const void *buf, size_t n);
+
+    /* ── fcntl ──────────────────────────────────────────────────────────── */
+
+    /* Open a test file so we have a real VFS fd */
+    int fd = vfs_open("/fcntl_test", O_CREAT | O_RDWR, 0644);
+    ASSERT(fd >= 0, "fcntl test: open failed");
+
+    /* F_GETFL: should reflect the open flags (O_RDWR) */
+    int flags = sys_fcntl(fd, F_GETFL, 0);
+    ASSERT((flags & (O_RDONLY | O_RDWR)) == O_RDWR, "F_GETFL wrong access mode");
+
+    /* F_SETFL / F_GETFL: add O_NONBLOCK */
+    int r = sys_fcntl(fd, F_SETFL, O_NONBLOCK);
+    ASSERT(r == 0, "F_SETFL failed");
+    flags = sys_fcntl(fd, F_GETFL, 0);
+    ASSERT(flags & O_NONBLOCK, "F_SETFL did not set O_NONBLOCK");
+
+    /* F_GETFD: no CLOEXEC initially */
+    r = sys_fcntl(fd, F_GETFD, 0);
+    ASSERT(r == 0, "F_GETFD should be 0 initially");
+
+    /* F_SETFD: set FD_CLOEXEC */
+    r = sys_fcntl(fd, F_SETFD, FD_CLOEXEC);
+    ASSERT(r == 0, "F_SETFD failed");
+    r = sys_fcntl(fd, F_GETFD, 0);
+    ASSERT(r == FD_CLOEXEC, "F_GETFD should be FD_CLOEXEC after F_SETFD");
+
+    /* F_DUPFD: duplicate to first fd >= fd+1 */
+    int fd2 = sys_fcntl(fd, F_DUPFD, fd + 1);
+    ASSERT(fd2 > fd, "F_DUPFD did not return fd >= minfd");
+
+    /* New descriptor must NOT inherit CLOEXEC (POSIX requirement) */
+    r = sys_fcntl(fd2, F_GETFD, 0);
+    ASSERT(r == 0, "F_DUPFD new fd must have CLOEXEC cleared");
+
+    vfs_close(fd2);
+    vfs_close(fd);
+
+    /* ── ioctl: TIOCGWINSZ ───────────────────────────────────────────────── */
+    struct winsize ws;
+    extern void *memset(void *, int, size_t);
+    memset(&ws, 0, sizeof(ws));
+    r = sys_ioctl(1 /* stdout */, TIOCGWINSZ, &ws);
+    ASSERT(r == 0, "TIOCGWINSZ failed");
+    ASSERT(ws.ws_row == 25, "TIOCGWINSZ wrong row count");
+    ASSERT(ws.ws_col == 80, "TIOCGWINSZ wrong col count");
+
+    /* ── ioctl: TCGETS ───────────────────────────────────────────────────── */
+    struct termios t;
+    memset(&t, 0, sizeof(t));
+    r = sys_ioctl(0 /* stdin */, TCGETS, &t);
+    ASSERT(r == 0, "TCGETS failed");
+    ASSERT(t.c_lflag & ICANON, "TCGETS: ICANON not set");
+    ASSERT(t.c_lflag & ECHO,   "TCGETS: ECHO not set");
+    ASSERT(t.c_cc[VEOF] == 0x04, "TCGETS: EOF not ^D");
+
+    /* ── ioctl: TCSETS (ignored) ─────────────────────────────────────────── */
+    r = sys_ioctl(0, TCSETS, &t);
+    ASSERT(r == 0, "TCSETS should succeed");
+
+    /* ── ioctl: FIONREAD on a pipe ───────────────────────────────────────── */
+    int pipefds[2];
+    r = sys_pipe(pipefds);
+    ASSERT(r == 0, "FIONREAD: sys_pipe failed");
+
+    int avail = -1;
+    r = sys_ioctl(pipefds[0], FIONREAD, &avail);
+    ASSERT(r == 0,     "FIONREAD failed on empty pipe");
+    ASSERT(avail == 0, "FIONREAD on empty pipe should be 0");
+
+    /* Write 3 bytes into the write end and check the read end */
+    struct file_desc *wfdp = vfs_get_fd(pipefds[1]);
+    ASSERT(wfdp && wfdp->is_pipe, "FIONREAD: write end not a pipe");
+    pipe_write((struct pipe *)wfdp->pipe_ptr, "abc", 3);
+
+    avail = -1;
+    r = sys_ioctl(pipefds[0], FIONREAD, &avail);
+    ASSERT(r == 0,     "FIONREAD failed after write");
+    ASSERT(avail == 3, "FIONREAD should report 3 bytes after write");
+
+    vfs_close(pipefds[0]);
+    vfs_close(pipefds[1]);
+}
+#endif /* !__aarch64__ */
+
 void kernel_selftest(void) {
     kprintf("CORE: running BIST...\n");
     selftest_passed = 0;
@@ -207,6 +301,7 @@ void kernel_selftest(void) {
     test_signal();
 #ifndef __aarch64__
     test_unix_socket();
+    test_fcntl_ioctl();
 #endif
 
     kprintf("CORE: BIST passed (%d checks)\n", selftest_passed);
