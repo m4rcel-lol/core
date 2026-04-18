@@ -5,6 +5,11 @@
 extern void kprintf(const char *fmt, ...);
 
 void kernel_panic(const char *msg) {
+#ifdef __aarch64__
+    __asm__ volatile("msr daifset, #0xf");  /* mask all exceptions */
+    kprintf("\n*** KERNEL PANIC ***\n%s\n", msg);
+    while (1) __asm__ volatile("wfe");
+#else
     __asm__ volatile("cli");
     kprintf("\n*** KERNEL PANIC ***\n%s\n", msg);
 
@@ -20,4 +25,5 @@ void kernel_panic(const char *msg) {
         depth++;
     }
     while (1) __asm__ volatile("hlt");
+#endif
 }

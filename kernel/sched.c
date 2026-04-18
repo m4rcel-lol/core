@@ -66,6 +66,7 @@ void sched_yield(void) {
         next->state = PROC_RUNNING;
         current = next;
 
+#ifndef __aarch64__
         /* FPU lazy save: if the outgoing task used FPU, save its state */
         if (prev && prev->fpu_used) {
             uint8_t *fpu = proc_fpu_state(prev);
@@ -82,6 +83,8 @@ void sched_yield(void) {
             uint64_t phys = VIRT_TO_PHYS((uint64_t)next->pml4);
             __asm__ volatile("movq %0, %%cr3" : : "r"(phys) : "memory");
         }
+#endif /* !__aarch64__ */
+
         switch_context(prev, next);
     }
 }
@@ -99,11 +102,16 @@ void sched_tick(void) {
 
 void sched_start(void) {
     /* Enable interrupts and enter idle loop */
+#ifdef __aarch64__
+    __asm__ volatile("msr daifclr, #2");   /* clear IRQ mask → enable IRQs */
+    while (1) __asm__ volatile("wfe");
+#else
     __asm__ volatile("sti");
     while (1) {
         __asm__ volatile("hlt");
         /* When we return from halt, a timer IRQ fired and sched_tick ran */
     }
+#endif
 }
 
 void sched_block(struct proc *p) {

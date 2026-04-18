@@ -5,9 +5,18 @@
 #include <core/types.h>
 
 #define PMM_MAX_ORDER 10
-#define KERNEL_BASE   0xFFFFFFFF80000000ULL
+
+#ifdef __aarch64__
+/* ARM64 bring-up: kernel runs identity-mapped in physical space */
+#define KERNEL_BASE     0x0ULL
+#define PHYS_TO_VIRT(p) ((void *)(uint64_t)(p))
+#define VIRT_TO_PHYS(v) ((uint64_t)(v))
+#else
+/* x86_64: kernel mapped at the top-2 GB window */
+#define KERNEL_BASE     0xFFFFFFFF80000000ULL
 #define PHYS_TO_VIRT(p) ((void *)((uint64_t)(p) + KERNEL_BASE))
 #define VIRT_TO_PHYS(v) ((uint64_t)(v) - KERNEL_BASE)
+#endif
 
 struct mb2_mmap_entry {
     uint64_t base;

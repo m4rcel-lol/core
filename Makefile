@@ -3,15 +3,75 @@
 
 ARCH    ?= x86_64
 
-# Support both x86_64-elf-gcc (preferred) and x86_64-linux-gnu-gcc (fallback)
-ifneq ($(shell which $(ARCH)-elf-gcc 2>/dev/null),)
-CC      := $(ARCH)-elf-gcc
-LD      := $(ARCH)-elf-ld
-OBJCOPY := $(ARCH)-elf-objcopy
+ifeq ($(ARCH),arm64)
+
+# ── ARM64 toolchain ──────────────────────────────────────────────────────────
+ifneq ($(shell which aarch64-elf-gcc 2>/dev/null),)
+CC      := aarch64-elf-gcc
+LD      := aarch64-elf-ld
+OBJCOPY := aarch64-elf-objcopy
 else
-CC      := $(ARCH)-linux-gnu-gcc
-LD      := $(ARCH)-linux-gnu-ld
-OBJCOPY := $(ARCH)-linux-gnu-objcopy
+CC      := aarch64-linux-gnu-gcc
+LD      := aarch64-linux-gnu-ld
+OBJCOPY := aarch64-linux-gnu-objcopy
+endif
+AS      := $(CC)
+
+CFLAGS  := -Os -std=c11 -ffreestanding -fno-builtin -fno-stack-protector \
+           -ffunction-sections -fdata-sections -fno-unwind-tables \
+           -fno-asynchronous-unwind-tables -fno-exceptions \
+           -fomit-frame-pointer \
+           -Wall -Wextra -Werror -Iinclude
+
+ASFLAGS := -ffreestanding -Iinclude
+
+LDFLAGS := --gc-sections -T linker-arm64.ld
+
+TARGET  := core-arm64
+ELF     := $(TARGET).elf
+BIN     := $(TARGET).bin
+
+# ARM64 source files:
+#   arch/arm64/platform.c provides all x86_64-specific stubs (GDT, IDT, PIC,
+#   VGA, PS/2, SYSCALL MSR, VMM) plus PL011 UART and Generic Timer.
+#   arch/arm64/paging.c  provides the ARMv8 4-level page tables (optional).
+#   The x86_64 driver files and kernel/syscall.c are excluded.
+C_SRCS := \
+    arch/arm64/paging.c      \
+    arch/arm64/platform.c    \
+    kernel/main.c            \
+    kernel/sched.c           \
+    kernel/proc.c            \
+    kernel/elf.c             \
+    kernel/mm.c              \
+    kernel/vmm.c             \
+    kernel/panic.c           \
+    kernel/selftest.c        \
+    fs/vfs.c                 \
+    fs/tmpfs.c               \
+    fs/initrd.c              \
+    ipc/pipe.c               \
+    ipc/signal.c             \
+    lib/kstring.c            \
+    lib/bitmap.c             \
+    lib/kprintf.c
+
+S_SRCS := \
+    arch/arm64/boot.S        \
+    arch/arm64/sched.S
+
+else
+
+# ── x86_64 toolchain (default) ───────────────────────────────────────────────
+# Support both x86_64-elf-gcc (preferred) and x86_64-linux-gnu-gcc (fallback)
+ifneq ($(shell which x86_64-elf-gcc 2>/dev/null),)
+CC      := x86_64-elf-gcc
+LD      := x86_64-elf-ld
+OBJCOPY := x86_64-elf-objcopy
+else
+CC      := x86_64-linux-gnu-gcc
+LD      := x86_64-linux-gnu-ld
+OBJCOPY := x86_64-linux-gnu-objcopy
 endif
 AS      := $(CC)
 
@@ -62,11 +122,13 @@ S_SRCS := \
     arch/x86_64/sched.S      \
     arch/x86_64/syscall.S
 
+endif  # ARCH
+
 C_OBJS  := $(C_SRCS:.c=.o)
 S_OBJS  := $(S_SRCS:.S=.o)
 OBJS    := $(S_OBJS) $(C_OBJS)
 
-.PHONY: all clean qemu iso img
+.PHONY: all clean qemu qemu-initrd qemu-arm64 iso img
 
 all: $(ELF)
 
@@ -114,6 +176,20 @@ qemu-initrd: $(ELF) initrd.cpio
 	    -no-shutdown \
 	    -append "root=/dev/ram0"
 
+qemu-arm64: ARCH=arm64
+qemu-arm64: $(ELF)
+	qemu-system-aarch64 \
+	    -M virt \
+	    -cpu cortex-a57 \
+	    -kernel $(ELF) \
+	    -serial stdio \
+	    -display none \
+	    -m 64M \
+	    -no-reboot \
+	    -no-shutdown
+
 clean:
-	rm -f $(OBJS) $(ELF) $(BIN) $(ISO) $(TARGET).img
+	rm -f $(OBJS) $(ELF) $(BIN)
+	rm -f $(if $(ISO),$(ISO)) core.iso core-arm64.elf core-arm64.bin
+	rm -f core.img core-arm64.img
 	rm -rf isodir

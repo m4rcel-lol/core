@@ -62,8 +62,13 @@ static uint64_t initrd_size  = 0;
 static void parse_mb2(uint64_t mb2_info) {
     if (!mb2_info) {
         /* No MB2 info: use a default memory map for QEMU */
+#ifdef __aarch64__
+        mmap_entries[0].base   = 0x40800000; /* QEMU virt: 8 MB into DRAM, above kernel */
+        mmap_entries[0].length = 56 * 1024 * 1024;
+#else
         mmap_entries[0].base   = 0x200000;
         mmap_entries[0].length = 30 * 1024 * 1024; /* 30 MB */
+#endif
         mmap_entries[0].type   = MB2_MMAP_AVAILABLE;
         mmap_count = 1;
         return;
@@ -94,8 +99,13 @@ static void parse_mb2(uint64_t mb2_info) {
         p += (tag->size + 7) & ~7U;
     }
     if (mmap_count == 0) {
+#ifdef __aarch64__
+        mmap_entries[0].base   = 0x40800000;
+        mmap_entries[0].length = 56 * 1024 * 1024;
+#else
         mmap_entries[0].base   = 0x200000;
         mmap_entries[0].length = 30 * 1024 * 1024;
+#endif
         mmap_entries[0].type   = MB2_MMAP_AVAILABLE;
         mmap_count = 1;
     }
@@ -193,5 +203,9 @@ void kmain(uint32_t magic, uint64_t mb2_info) {
     sched_start();
 
     /* Should never reach here */
+#ifdef __aarch64__
+    while (1) __asm__ volatile("wfe");
+#else
     while (1) __asm__ volatile("hlt");
+#endif
 }

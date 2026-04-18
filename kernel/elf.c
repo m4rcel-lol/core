@@ -33,7 +33,11 @@ static uint64_t *elf_create_pml4(void) {
     uint64_t *pml4  = (uint64_t *)PHYS_TO_VIRT(phys);
     uint64_t *kpml4 = vmm_get_kernel_pml4();
     for (int i = 0; i < 256; i++) pml4[i] = 0;
-    for (int i = 256; i < 512; i++) pml4[i] = kpml4[i];
+    if (kpml4) {
+        for (int i = 256; i < 512; i++) pml4[i] = kpml4[i];
+    } else {
+        for (int i = 256; i < 512; i++) pml4[i] = 0;
+    }
     return pml4;
 }
 

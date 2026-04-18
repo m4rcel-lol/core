@@ -30,18 +30,25 @@ sudo apt-get install gcc-x86-64-linux-gnu binutils-x86-64-linux-gnu
 # Or build a proper cross-compiler from source targeting x86_64-elf
 ```
 
+For ARM64 (secondary target):
+```bash
+sudo apt-get install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+```
+
 ## Building
 
 ```bash
-make all       # builds core.elf
-make iso       # builds core.iso (requires grub-mkrescue)
-make clean     # removes all build artifacts
+make all             # builds core.elf  (x86_64, default)
+make ARCH=arm64 all  # builds core-arm64.elf (AArch64)
+make iso             # builds core.iso (requires grub-mkrescue)
+make clean           # removes all build artifacts
 ```
 
 ## Running in QEMU
 
 ```bash
-make qemu
+make qemu           # x86_64
+make qemu-arm64     # AArch64 (requires qemu-system-aarch64)
 ```
 
 This runs:
@@ -105,6 +112,5 @@ Syscall table completeness:        40/40 (100%)
 Tested on:                         QEMU 8.x, x86_64
 Boot time (QEMU, -m 32M):          < 1 second
 Known limitations:
-  - ARM64 build requires aarch64-elf-gcc and separate Makefile target
   - Socket implementation (AF_UNIX) is in-kernel loopback only, no network stack
 =========================
