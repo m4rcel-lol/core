@@ -17,7 +17,7 @@ CORE is a monolithic kernel that implements:
 
 ## Build Prerequisites
 
-- `x86_64-elf-gcc` cross-compiler (binutils + GCC targeting `x86_64-elf`)
+- `x86_64-elf-gcc` cross-compiler (binutils + GCC targeting `x86_64-elf`), **or** `x86_64-linux-gnu-gcc`, **or** the native `gcc` on an x86_64 host
 - GNU Make
 - QEMU (`qemu-system-x86_64`) for testing
 - `grub-mkrescue` + `xorriso` for ISO generation (optional)
@@ -30,9 +30,42 @@ sudo apt-get install gcc-x86-64-linux-gnu binutils-x86-64-linux-gnu
 # Or build a proper cross-compiler from source targeting x86_64-elf
 ```
 
+For ISO generation:
+```bash
+sudo apt-get install grub-pc-bin grub-common xorriso mtools
+```
+
 For ARM64 (secondary target):
 ```bash
 sudo apt-get install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+```
+
+### Installing the toolchain (Arch Linux)
+
+The Makefile automatically falls back to native `gcc`/`ld`/`objcopy` when
+no cross-compiler is found, so on an x86_64 Arch host no AUR packages are
+strictly required to build the kernel.
+
+```bash
+# Core build tools (includes gcc, make, binutils)
+sudo pacman -S base-devel
+
+# ISO generation (grub-mkrescue + xorriso + mtools)
+sudo pacman -S grub xorriso mtools
+
+# QEMU for testing
+sudo pacman -S qemu-system-x86
+```
+
+For a proper bare-metal cross-compiler (optional, recommended):
+```bash
+# From the AUR — use your preferred AUR helper (e.g. paru or yay)
+paru -S x86_64-elf-gcc x86_64-elf-binutils
+```
+
+For ARM64 (secondary target):
+```bash
+sudo pacman -S aarch64-linux-gnu-gcc aarch64-linux-gnu-binutils
 ```
 
 ## Building
