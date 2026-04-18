@@ -42,8 +42,10 @@
 #define S_IFDIR  0x4000
 #define S_IFIFO  0x1000
 #define S_IFSOCK 0xC000
+#define S_IFLNK  0xA000
 #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#define S_ISLNK(m) (((m) & S_IFMT) == S_IFLNK)
 
 #define ENOENT   2
 #define EEXIST   17
@@ -71,6 +73,8 @@
 #define ENOTCONN    107
 #define ECONNREFUSED 111
 #define EISCONN     106
+#define ENAMETOOLONG 36
+#define EIO          5
 
 struct stat {
     dev_t     st_dev;
@@ -113,6 +117,13 @@ struct vfs_ops {
     int     (*rename)   (struct inode *old_dir, const char *old_name,
                          struct inode *new_dir, const char *new_name);
     int     (*truncate) (struct inode *ino, off_t length);
+    int     (*chmod)    (struct inode *ino, mode_t mode);
+    int     (*chown)    (struct inode *ino, uid_t uid, gid_t gid);
+    int     (*link)     (struct inode *ino, struct inode *new_parent,
+                         const char *new_name);
+    struct inode *(*symlink)(struct inode *parent, const char *name,
+                             const char *target);
+    int     (*readlink) (struct inode *ino, char *buf, size_t size);
     struct inode *(*lookup)(struct inode *parent, const char *name);
     struct inode *(*create)(struct inode *parent, const char *name, int mode);
 };
@@ -146,6 +157,7 @@ int   vfs_register(const char *name, struct vfs_ops *ops,
                    struct inode *(*mount_fn)(void *data), void *data);
 int   vfs_mount(const char *path, const char *fstype, void *data);
 struct inode *vfs_resolve(const char *path);
+struct inode *vfs_root_inode(void);
 struct inode *vfs_resolve_parent(const char *path, char *name_out);
 int   vfs_open(const char *path, int flags, int mode);
 int   vfs_close(int fd);
@@ -166,5 +178,13 @@ struct file_desc *vfs_get_fd(int fd);
 int   vfs_dupfd(int fd, int minfd);
 int   vfs_ftruncate(int fd, off_t length);
 int   vfs_truncate(const char *path, off_t length);
+int   vfs_chmod(const char *path, mode_t mode);
+int   vfs_fchmod(int fd, mode_t mode);
+int   vfs_chown(const char *path, uid_t uid, gid_t gid);
+int   vfs_fchown(int fd, uid_t uid, gid_t gid);
+int   vfs_access(const char *path, int mode);
+int   vfs_link(const char *oldpath, const char *newpath);
+int   vfs_symlink(const char *target, const char *linkpath);
+int   vfs_readlink(const char *path, char *buf, size_t size);
 
 #endif /* CORE_VFS_H */

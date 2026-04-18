@@ -23,6 +23,9 @@ extern int sys_pipe(int fds[2]);
 extern int sys_sigaction(int sig, const struct sigaction *act, struct sigaction *old);
 extern int sys_sigreturn(void);
 extern int sys_kill(pid_t pid, int sig);
+extern struct proc *proc_get_by_pid(pid_t pid);
+extern int proc_count(void);
+extern size_t pmm_free_bytes(void);
 
 /* __core_version is defined in boot.S */
 extern const char __core_version[];
@@ -668,6 +671,199 @@ static uint64_t do_sys_truncate(struct regs *r) {
     return (uint64_t)(int64_t)vfs_truncate((const char *)r->rdi, (off_t)r->rsi);
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * SYS_POLL (43) — poll(struct pollfd *fds, nfds_t nfds, int timeout_ms)
+ *
+ * Walks the pollfd array and checks readiness the same way sys_select does.
+ * A timeout of -1 means "wait indefinitely" (modelled as one check + one
+ * 100 ms sleep + one final check). A timeout of 0 is a pure poll (no sleep).
+ * ──────────────────────────────────────────────────────────────────────────*/
+int sys_poll(struct pollfd *fds, int nfds, int timeout_ms) {
+    if (!fds || nfds < 0) return -EINVAL;
+    if (nfds > FD_SETSIZE) return -EINVAL;
+
+    int attempts = (timeout_ms == 0) ? 1 : 2;
+    uint32_t sleep_ms = (timeout_ms < 0) ? 100U
+                      : (timeout_ms > 0) ? (uint32_t)timeout_ms : 0U;
+
+    int ready = 0;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        if (attempt > 0 && sleep_ms > 0) timer_sleep_ms(sleep_ms);
+
+        ready = 0;
+        for (int i = 0; i < nfds; i++) {
+            int16_t rev = 0;
+            int fd = fds[i].fd;
+            if (fd < 0) { fds[i].revents = POLLNVAL; continue; }
+            struct file_desc *fdp = vfs_get_fd(fd);
+            if (!fdp) { fds[i].revents = POLLNVAL; ready++; continue; }
+            if ((fds[i].events & POLLIN) && fd_is_read_ready(fd))  rev |= POLLIN;
+            if ((fds[i].events & POLLOUT) && fd_is_write_ready(fd)) rev |= POLLOUT;
+            /* POLLERR / POLLHUP: pipe write-end closed → HUP on read-end */
+            if (fdp->is_pipe && fdp->pipe_ptr) {
+                struct pipe *p = (struct pipe *)fdp->pipe_ptr;
+                if (p->write_closed && p->count == 0) rev |= POLLHUP;
+            }
+            fds[i].revents = rev;
+            if (rev) ready++;
+        }
+        if (ready > 0 || attempts == 1) break;
+    }
+    return ready;
+}
+
+static uint64_t do_sys_poll(struct regs *r) {
+    return (uint64_t)(int64_t)sys_poll(
+        (struct pollfd *)r->rdi,
+        (int)r->rsi,
+        (int)r->rdx);
+}
+
+/* ── Credentials ──────────────────────────────────────────────────────────── */
+static uint64_t do_sys_getuid(struct regs *r) {
+    (void)r;
+    return current ? (uint64_t)current->uid : 0ULL;
+}
+static uint64_t do_sys_geteuid(struct regs *r) {
+    (void)r;
+    return current ? (uint64_t)current->euid : 0ULL;
+}
+static uint64_t do_sys_getgid(struct regs *r) {
+    (void)r;
+    return current ? (uint64_t)current->gid : 0ULL;
+}
+static uint64_t do_sys_getegid(struct regs *r) {
+    (void)r;
+    return current ? (uint64_t)current->egid : 0ULL;
+}
+
+static uint64_t do_sys_setuid(struct regs *r) {
+    if (!current) return (uint64_t)(int64_t)-EINVAL;
+    uid_t uid = (uid_t)r->rdi;
+    /* Only root (euid=0) can set arbitrary uid; others can only set to own uid */
+    if (current->euid != 0 && uid != current->uid) return (uint64_t)(int64_t)-EPERM;
+    current->uid = uid;
+    current->euid = uid;
+    return 0;
+}
+
+static uint64_t do_sys_setgid(struct regs *r) {
+    if (!current) return (uint64_t)(int64_t)-EINVAL;
+    gid_t gid = (gid_t)r->rdi;
+    if (current->euid != 0 && gid != current->gid) return (uint64_t)(int64_t)-EPERM;
+    current->gid = gid;
+    current->egid = gid;
+    return 0;
+}
+
+/* ── chmod / chown / access ───────────────────────────────────────────────── */
+static uint64_t do_sys_chmod(struct regs *r) {
+    const char *path = (const char *)r->rdi;
+    mode_t mode = (mode_t)r->rsi;
+    return (uint64_t)(int64_t)vfs_chmod(path, mode);
+}
+
+static uint64_t do_sys_chown(struct regs *r) {
+    const char *path = (const char *)r->rdi;
+    uid_t uid = (uid_t)r->rsi;
+    gid_t gid = (gid_t)r->rdx;
+    return (uint64_t)(int64_t)vfs_chown(path, uid, gid);
+}
+
+static uint64_t do_sys_access(struct regs *r) {
+    const char *path = (const char *)r->rdi;
+    int amode = (int)r->rsi;
+    return (uint64_t)(int64_t)vfs_access(path, amode);
+}
+
+/* ── alarm / nanosleep ────────────────────────────────────────────────────── */
+static uint64_t do_sys_alarm(struct regs *r) {
+    if (!current) return 0;
+    uint32_t seconds = (uint32_t)r->rdi;
+    uint32_t remaining = 0;
+    uint64_t now = kernel_uptime_ms();
+    if (current->alarm_deadline_ms > now) {
+        uint64_t left_ms = current->alarm_deadline_ms - now;
+        remaining = (uint32_t)((left_ms + 999) / 1000);
+    }
+    current->alarm_deadline_ms = seconds ? (now + (uint64_t)seconds * 1000) : 0;
+    return (uint64_t)remaining;
+}
+
+static uint64_t do_sys_nanosleep(struct regs *r) {
+    const struct timespec *req = (const struct timespec *)r->rdi;
+    if (!req) return (uint64_t)(int64_t)-EINVAL;
+    int64_t ms = req->tv_sec * 1000 + req->tv_nsec / 1000000;
+    if (ms <= 0) return 0;
+    timer_sleep_ms((uint32_t)(ms > 0xFFFFFFFFLL ? 0xFFFFFFFFU : (uint32_t)ms));
+    return 0;
+}
+
+/* ── Session / process group ──────────────────────────────────────────────── */
+static uint64_t do_sys_setsid(struct regs *r) {
+    (void)r;
+    if (!current) return (uint64_t)(int64_t)-EINVAL;
+    /* Cannot be a process group leader */
+    if (current->pgid == (pid_t)current->pid) return (uint64_t)(int64_t)-EPERM;
+    current->sid  = (pid_t)current->pid;
+    current->pgid = (pid_t)current->pid;
+    return (uint64_t)current->sid;
+}
+
+static uint64_t do_sys_getpgrp(struct regs *r) {
+    (void)r;
+    return current ? (uint64_t)(uint32_t)current->pgid : 0ULL;
+}
+
+static uint64_t do_sys_setpgid(struct regs *r) {
+    pid_t pid  = (pid_t)r->rdi;
+    pid_t pgid = (pid_t)r->rsi;
+    if (!current) return (uint64_t)(int64_t)-EINVAL;
+    struct proc *target = (pid == 0) ? current : proc_get_by_pid(pid);
+    if (!target) return (uint64_t)(int64_t)-ESRCH;
+    if (pgid < 0) return (uint64_t)(int64_t)-EINVAL;
+    target->pgid = pgid ? pgid : (pid_t)target->pid;
+    return 0;
+}
+
+/* ── link / symlink / readlink ────────────────────────────────────────────── */
+static uint64_t do_sys_link(struct regs *r) {
+    return (uint64_t)(int64_t)vfs_link((const char *)r->rdi, (const char *)r->rsi);
+}
+
+static uint64_t do_sys_symlink(struct regs *r) {
+    return (uint64_t)(int64_t)vfs_symlink((const char *)r->rdi, (const char *)r->rsi);
+}
+
+static uint64_t do_sys_readlink(struct regs *r) {
+    const char *path = (const char *)r->rdi;
+    char  *buf  = (char *)r->rsi;
+    size_t size = (size_t)r->rdx;
+    return (uint64_t)(int64_t)vfs_readlink(path, buf, size);
+}
+
+/* ── sysinfo ──────────────────────────────────────────────────────────────── */
+static uint64_t do_sys_sysinfo(struct regs *r) {
+    struct sysinfo *si = (struct sysinfo *)r->rdi;
+    if (!si) return (uint64_t)(int64_t)-EINVAL;
+    extern void *memset(void *, int, size_t);
+    memset(si, 0, sizeof(*si));
+    si->uptime    = (int64_t)(kernel_uptime_ms() / 1000);
+    si->totalram  = pmm_free_bytes() + 1024ULL * 1024;  /* approx */
+    si->freeram   = pmm_free_bytes();
+    si->procs     = (uint16_t)proc_count();
+    si->mem_unit  = PAGE_SIZE;
+    return 0;
+}
+
+/* ── umask ────────────────────────────────────────────────────────────────── */
+static uint64_t do_sys_umask(struct regs *r) {
+    if (!current) return 022;
+    mode_t old = (mode_t)current->umask;
+    current->umask = (uint32_t)(r->rdi & 07777);
+    return (uint64_t)old;
+}
+
 typedef uint64_t (*syscall_fn_t)(struct regs *r);
 
 static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
@@ -714,6 +910,26 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     [SYS_SELECT]      = do_sys_select,
     [SYS_FTRUNCATE]   = do_sys_ftruncate,
     [SYS_TRUNCATE]    = do_sys_truncate,
+    [SYS_POLL]        = do_sys_poll,
+    [SYS_GETUID]      = do_sys_getuid,
+    [SYS_GETEUID]     = do_sys_geteuid,
+    [SYS_GETGID]      = do_sys_getgid,
+    [SYS_GETEGID]     = do_sys_getegid,
+    [SYS_SETUID]      = do_sys_setuid,
+    [SYS_SETGID]      = do_sys_setgid,
+    [SYS_CHMOD]       = do_sys_chmod,
+    [SYS_CHOWN]       = do_sys_chown,
+    [SYS_ACCESS]      = do_sys_access,
+    [SYS_ALARM]       = do_sys_alarm,
+    [SYS_NANOSLEEP]   = do_sys_nanosleep,
+    [SYS_SETSID]      = do_sys_setsid,
+    [SYS_GETPGRP]     = do_sys_getpgrp,
+    [SYS_SETPGID]     = do_sys_setpgid,
+    [SYS_LINK]        = do_sys_link,
+    [SYS_SYMLINK]     = do_sys_symlink,
+    [SYS_READLINK]    = do_sys_readlink,
+    [SYS_SYSINFO]     = do_sys_sysinfo,
+    [SYS_UMASK]       = do_sys_umask,
 };
 
 /* MSR addresses for SYSCALL/SYSRET */

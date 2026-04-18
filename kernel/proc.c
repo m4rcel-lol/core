@@ -43,6 +43,14 @@ struct proc *proc_alloc(void) {
             p->priority = PRIO_NORMAL;
             p->pml4  = vmm_get_kernel_pml4();
             for (int fd = 0; fd < FD_MAX; fd++) p->fds[fd] = -1;
+            /* Credentials */
+            p->uid   = 0; p->gid   = 0;
+            p->euid  = 0; p->egid  = 0;
+            /* Process group / session = own pid (set later when pid is known) */
+            p->pgid  = (pid_t)p->pid;
+            p->sid   = (pid_t)p->pid;
+            p->umask = 022;
+            p->alarm_deadline_ms = 0;
             p->cwd[0] = '/';
             p->cwd[1] = '\0';
             return p;
@@ -87,6 +95,15 @@ int sys_fork(void) {
 
     /* Copy working directory */
     for (int i = 0; i < 256; i++) child->cwd[i] = current->cwd[i];
+
+    /* Copy credentials */
+    child->uid   = current->uid;
+    child->gid   = current->gid;
+    child->euid  = current->euid;
+    child->egid  = current->egid;
+    child->pgid  = current->pgid;
+    child->sid   = current->sid;
+    child->umask = current->umask;
 
     /* Copy file descriptors */
     for (int fd = 0; fd < FD_MAX; fd++) child->fds[fd] = current->fds[fd];
@@ -207,4 +224,31 @@ int proc_kthread(void (*fn)(void *), void *arg) {
     p->pml4     = vmm_get_kernel_pml4();
     sched_enqueue(p);
     return (int)p->pid;
+}
+
+/*
+ * proc_count — return the number of currently used process slots.
+ * Called by sysinfo(2) to fill procs field.
+ */
+int proc_count(void) {
+    int n = 0;
+    for (int i = 0; i < PROC_MAX; i++) {
+        if (proc_used[i]) n++;
+    }
+    return n;
+}
+
+/*
+ * proc_check_alarms — scan all processes and pend SIGALRM if the alarm has
+ * fired.  Called from the timer IRQ handler every tick.
+ */
+void proc_check_alarms(uint64_t now_ms) {
+    for (int i = 0; i < PROC_MAX; i++) {
+        if (!proc_used[i]) continue;
+        struct proc *p = &proc_table[i];
+        if (p->alarm_deadline_ms && now_ms >= p->alarm_deadline_ms) {
+            p->alarm_deadline_ms = 0;
+            p->sigpending |= (1ULL << (SIGALRM - 1));
+        }
+    }
 }

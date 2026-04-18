@@ -1,0 +1,3 @@
+#!/bin/sh
+# CORE rc — early userspace init script
+echo "CORE: running /etc/rc"

@@ -13,6 +13,7 @@ extern void *memmove(void *, const void *, size_t);
 /* Max 1024 inodes */
 #define TMPFS_MAX_INODES 1024
 #define TMPFS_FILE_MAX   65536   /* 64 KB max file size */
+#define TMPFS_LINK_MAX   128     /* max symlink target length */
 
 struct tmpfs_dirent {
     char                name[VFS_NAME_MAX + 1];
@@ -24,11 +25,14 @@ struct tmpfs_inode {
     ino_t    ino;
     mode_t   mode;
     off_t    size;
-    uint8_t *data;       /* file data */
-    size_t   data_cap;   /* allocated capacity */
-    struct tmpfs_dirent *children; /* for directories */
+    uid_t    uid;
+    gid_t    gid;
+    uint32_t refcount;   /* hard-link count */
     int      in_use;
-    uint32_t refcount;
+    uint8_t *data;       /* file data (regular files) */
+    size_t   data_cap;   /* allocated capacity */
+    char    *symlink;    /* symlink target (symlinks only) */
+    struct tmpfs_dirent *children; /* for directories */
 };
 
 static struct tmpfs_inode tmpfs_inodes[TMPFS_MAX_INODES];
@@ -43,8 +47,11 @@ static struct tmpfs_inode *tmpfs_alloc_inode(mode_t mode) {
             t->ino      = (ino_t)(i + 1);
             t->mode     = mode;
             t->size     = 0;
+            t->uid      = 0;
+            t->gid      = 0;
             t->data     = NULL;
             t->data_cap = 0;
+            t->symlink  = NULL;
             t->children = NULL;
             t->refcount = 1;
             return t;
@@ -143,9 +150,11 @@ static int tmpfs_stat(struct inode *ino, struct stat *st) {
     st->st_ino     = t->ino;
     st->st_mode    = t->mode;
     st->st_size    = t->size;
+    st->st_uid     = (uid_t)t->uid;
+    st->st_gid     = (gid_t)t->gid;
     st->st_blksize = 4096;
     st->st_blocks  = (t->size + 511) / 512;
-    st->st_nlink   = 1;
+    st->st_nlink   = (nlink_t)t->refcount;
     return 0;
 }
 
@@ -268,19 +277,115 @@ static struct inode *tmpfs_create(struct inode *parent, const char *name, int mo
     return make_vfs_inode(child);
 }
 
+/* ── New ops: chmod, chown, link, symlink, readlink ── */
+
+static int tmpfs_chmod(struct inode *ino, mode_t mode) {
+    struct tmpfs_inode *t = (struct tmpfs_inode *)ino->private;
+    if (!t) return -EBADF;
+    /* Preserve file-type bits, update permission bits only */
+    t->mode = (t->mode & S_IFMT) | (mode & 07777);
+    ino->mode = t->mode;
+    return 0;
+}
+
+static int tmpfs_chown(struct inode *ino, uid_t uid, gid_t gid) {
+    struct tmpfs_inode *t = (struct tmpfs_inode *)ino->private;
+    if (!t) return -EBADF;
+    if (uid != (uid_t)-1) t->uid = uid;
+    if (gid != (gid_t)-1) t->gid = gid;
+    return 0;
+}
+
+/*
+ * tmpfs_link — create a hard link to an existing inode in new_parent.
+ * Increments the refcount on the underlying tmpfs_inode.
+ */
+static int tmpfs_link(struct inode *ino, struct inode *new_parent,
+                       const char *new_name) {
+    struct tmpfs_inode *t  = (struct tmpfs_inode *)ino->private;
+    struct tmpfs_inode *pt = (struct tmpfs_inode *)new_parent->private;
+    if (!t || !pt) return -EBADF;
+    if (!S_ISDIR(pt->mode)) return -ENOTDIR;
+    if (S_ISDIR(t->mode)) return -EPERM;   /* cannot hard-link directories */
+
+    /* Check new_name doesn't already exist */
+    struct tmpfs_dirent *de = pt->children;
+    while (de) {
+        if (strcmp(de->name, new_name) == 0) return -EEXIST;
+        de = de->next;
+    }
+
+    struct tmpfs_dirent *entry =
+        (struct tmpfs_dirent *)kmalloc(sizeof(struct tmpfs_dirent));
+    if (!entry) return -ENOMEM;
+    strncpy(entry->name, new_name, VFS_NAME_MAX);
+    entry->inode = t;
+    entry->next  = pt->children;
+    pt->children = entry;
+    t->refcount++;
+    return 0;
+}
+
+/*
+ * tmpfs_symlink — create a symlink entry named @name in @parent pointing at
+ * the NUL-terminated string @target.
+ */
+static struct inode *tmpfs_symlink(struct inode *parent, const char *name,
+                                   const char *target) {
+    struct tmpfs_inode *pt = (struct tmpfs_inode *)parent->private;
+    if (!pt || !S_ISDIR(pt->mode)) return NULL;
+
+    size_t tlen = strlen(target);
+    if (tlen >= TMPFS_LINK_MAX) return NULL;
+
+    struct tmpfs_inode *child = tmpfs_alloc_inode(S_IFLNK | 0777);
+    if (!child) return NULL;
+
+    child->symlink = (char *)kmalloc(tlen + 1);
+    if (!child->symlink) { child->in_use = 0; return NULL; }
+    strncpy(child->symlink, target, tlen + 1);
+    child->size = (off_t)tlen;
+
+    struct tmpfs_dirent *entry =
+        (struct tmpfs_dirent *)kmalloc(sizeof(struct tmpfs_dirent));
+    if (!entry) { kfree(child->symlink); child->in_use = 0; return NULL; }
+    strncpy(entry->name, name, VFS_NAME_MAX);
+    entry->inode = child;
+    entry->next  = pt->children;
+    pt->children = entry;
+    return make_vfs_inode(child);
+}
+
+static int tmpfs_readlink(struct inode *ino, char *buf, size_t size) {
+    struct tmpfs_inode *t = (struct tmpfs_inode *)ino->private;
+    if (!t) return -EBADF;
+    if (!S_ISLNK(t->mode)) return -EINVAL;
+    if (!t->symlink) return -ENOENT;
+    size_t tlen = strlen(t->symlink);
+    size_t n = tlen < size ? tlen : size - 1;
+    strncpy(buf, t->symlink, n);
+    buf[n] = '\0';
+    return (int)n;
+}
+
 static struct vfs_ops tmpfs_ops = {
-    .open     = tmpfs_open,
-    .close    = tmpfs_close,
-    .read     = tmpfs_read,
-    .write    = tmpfs_write,
-    .readdir  = tmpfs_readdir,
-    .stat     = tmpfs_stat,
-    .mkdir    = tmpfs_mkdir,
-    .unlink   = tmpfs_unlink,
-    .rename   = tmpfs_rename,
-    .truncate = tmpfs_truncate,
-    .lookup   = tmpfs_lookup,
-    .create   = tmpfs_create,
+    .open      = tmpfs_open,
+    .close     = tmpfs_close,
+    .read      = tmpfs_read,
+    .write     = tmpfs_write,
+    .readdir   = tmpfs_readdir,
+    .stat      = tmpfs_stat,
+    .mkdir     = tmpfs_mkdir,
+    .unlink    = tmpfs_unlink,
+    .rename    = tmpfs_rename,
+    .truncate  = tmpfs_truncate,
+    .chmod     = tmpfs_chmod,
+    .chown     = tmpfs_chown,
+    .link      = tmpfs_link,
+    .symlink   = tmpfs_symlink,
+    .readlink  = tmpfs_readlink,
+    .lookup    = tmpfs_lookup,
+    .create    = tmpfs_create,
 };
 
 static struct inode *tmpfs_mount(void *data) {

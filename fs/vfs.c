@@ -1,6 +1,7 @@
 /* CORE Kernel — (c) CORE Project, MIT License */
 #include <core/types.h>
 #include <core/vfs.h>
+#include <core/proc.h>
 #include <core/mm.h>
 #include <core/drivers.h>
 
@@ -72,6 +73,10 @@ int vfs_mount(const char *path, const char *fstype, void *data) {
 static struct inode *mount_root(void) {
     if (mount_count == 0) return NULL;
     return mounts[0].root; /* First mount is "/" */
+}
+
+struct inode *vfs_root_inode(void) {
+    return mount_root();
 }
 
 struct inode *vfs_resolve(const char *path) {
@@ -333,3 +338,128 @@ int vfs_truncate(const char *path, off_t length) {
     if (!ino->ops || !ino->ops->truncate) return -ENOSYS;
     return ino->ops->truncate(ino, length);
 }
+
+int vfs_chmod(const char *path, mode_t mode) {
+    struct inode *ino = vfs_resolve(path);
+    if (!ino) return -ENOENT;
+    if (!ino->ops || !ino->ops->chmod) return -ENOSYS;
+    return ino->ops->chmod(ino, mode);
+}
+
+int vfs_fchmod(int fd, mode_t mode) {
+    if (fd < 0 || fd >= VFS_FD_MAX) return -EBADF;
+    struct file_desc *f = &fd_table[fd];
+    if (!f->inode) return -EBADF;
+    if (!f->inode->ops || !f->inode->ops->chmod) return -ENOSYS;
+    return f->inode->ops->chmod(f->inode, mode);
+}
+
+int vfs_chown(const char *path, uid_t uid, gid_t gid) {
+    struct inode *ino = vfs_resolve(path);
+    if (!ino) return -ENOENT;
+    if (!ino->ops || !ino->ops->chown) return -ENOSYS;
+    return ino->ops->chown(ino, uid, gid);
+}
+
+int vfs_fchown(int fd, uid_t uid, gid_t gid) {
+    if (fd < 0 || fd >= VFS_FD_MAX) return -EBADF;
+    struct file_desc *f = &fd_table[fd];
+    if (!f->inode) return -EBADF;
+    if (!f->inode->ops || !f->inode->ops->chown) return -ENOSYS;
+    return f->inode->ops->chown(f->inode, uid, gid);
+}
+
+/*
+ * vfs_access — check whether the current process can access @path with mode
+ * @amode (F_OK=0, R_OK=4, W_OK=2, X_OK=1).  Simplified: always grants access
+ * for root (euid==0); for others checks permission bits against st_mode.
+ */
+int vfs_access(const char *path, int amode) {
+    struct inode *ino = vfs_resolve(path);
+    if (!ino) return -ENOENT;
+    if (amode == 0 /* F_OK */) return 0;   /* file exists */
+
+    struct stat st;
+    if (!ino->ops || !ino->ops->stat) return -ENOSYS;
+    int r = ino->ops->stat(ino, &st);
+    if (r < 0) return r;
+
+    extern struct proc *current;
+    if (current && current->euid == 0) return 0;   /* root always succeeds */
+
+    mode_t m = st.st_mode & 07777;
+    /* Check other-bits (simplified: we only model other for non-root) */
+    int ok = 1;
+    if ((amode & 4) && !(m & 0004)) ok = 0;
+    if ((amode & 2) && !(m & 0002)) ok = 0;
+    if ((amode & 1) && !(m & 0001)) ok = 0;
+    return ok ? 0 : -EACCES;
+}
+
+int vfs_link(const char *oldpath, const char *newpath) {
+    struct inode *ino = vfs_resolve(oldpath);
+    if (!ino) return -ENOENT;
+
+    /* Resolve newpath's parent directory and leaf name */
+    char parent_path[256];
+    const char *leaf = newpath;
+    /* Find last '/' */
+    int last_slash = -1;
+    for (int i = 0; newpath[i]; i++) {
+        if (newpath[i] == '/') last_slash = i;
+    }
+    struct inode *parent;
+    if (last_slash <= 0) {
+        extern struct inode *vfs_root_inode(void);
+        parent = vfs_root_inode();
+        leaf   = newpath + (last_slash + 1);
+    } else {
+        extern size_t strlen(const char *);
+        size_t plen = (size_t)last_slash;
+        if (plen >= sizeof(parent_path) - 1) return -ENAMETOOLONG;
+        extern char *strncpy(char *, const char *, size_t);
+        strncpy(parent_path, newpath, plen);
+        parent_path[plen] = '\0';
+        parent = vfs_resolve(parent_path);
+        leaf   = newpath + last_slash + 1;
+    }
+    if (!parent) return -ENOENT;
+    if (!ino->ops || !ino->ops->link) return -ENOSYS;
+    return ino->ops->link(ino, parent, leaf);
+}
+
+int vfs_symlink(const char *target, const char *linkpath) {
+    /* Resolve parent of linkpath */
+    char parent_path[256];
+    const char *leaf = linkpath;
+    int last_slash = -1;
+    for (int i = 0; linkpath[i]; i++) {
+        if (linkpath[i] == '/') last_slash = i;
+    }
+    struct inode *parent;
+    if (last_slash <= 0) {
+        extern struct inode *vfs_root_inode(void);
+        parent = vfs_root_inode();
+        leaf   = linkpath + (last_slash + 1);
+    } else {
+        size_t plen = (size_t)last_slash;
+        if (plen >= sizeof(parent_path) - 1) return -ENAMETOOLONG;
+        extern char *strncpy(char *, const char *, size_t);
+        strncpy(parent_path, linkpath, plen);
+        parent_path[plen] = '\0';
+        parent = vfs_resolve(parent_path);
+        leaf   = linkpath + last_slash + 1;
+    }
+    if (!parent) return -ENOENT;
+    if (!parent->ops || !parent->ops->symlink) return -ENOSYS;
+    struct inode *sym = parent->ops->symlink(parent, leaf, target);
+    return sym ? 0 : -EIO;
+}
+
+int vfs_readlink(const char *path, char *buf, size_t size) {
+    struct inode *ino = vfs_resolve(path);
+    if (!ino) return -ENOENT;
+    if (!ino->ops || !ino->ops->readlink) return -EINVAL;
+    return ino->ops->readlink(ino, buf, size);
+}
+

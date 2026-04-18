@@ -12,6 +12,9 @@
 extern void kernel_panic(const char *msg);
 extern int strcmp(const char *a, const char *b);
 extern void *memset(void *, int, size_t);
+extern size_t pmm_free_bytes(void);
+extern int proc_count(void);
+extern uint64_t kernel_uptime_ms(void);
 
 static int selftest_passed = 0;
 static int selftest_failed = 0;
@@ -430,6 +433,181 @@ static void test_ftruncate(void) {
 }
 #endif /* !__aarch64__ */
 
+/* Test 12: poll(2) */
+#ifndef __aarch64__
+static void test_poll(void) {
+    extern int sys_poll(struct pollfd *fds, int nfds, int timeout_ms);
+    extern int sys_pipe(int fds[2]);
+    extern ssize_t pipe_write(struct pipe *p, const void *buf, size_t n);
+
+    int pipefds[2];
+    int r = sys_pipe(pipefds);
+    ASSERT(r == 0, "poll: sys_pipe failed");
+
+    struct pollfd pfd[2];
+    pfd[0].fd = pipefds[0]; pfd[0].events = POLLIN;  pfd[0].revents = 0;
+    pfd[1].fd = pipefds[1]; pfd[1].events = POLLOUT; pfd[1].revents = 0;
+
+    /* Empty pipe: poll mode (0 ms timeout) — read-end not ready */
+    r = sys_poll(pfd, 2, 0);
+    ASSERT(r >= 0,              "poll: result should be >= 0 on empty pipe");
+    ASSERT(!(pfd[0].revents & POLLIN),  "poll: read-end POLLIN should be clear on empty");
+    ASSERT(pfd[1].revents & POLLOUT,    "poll: write-end POLLOUT should be set");
+
+    /* Write data: read-end should become ready */
+    struct file_desc *wfdp = vfs_get_fd(pipefds[1]);
+    ASSERT(wfdp && wfdp->is_pipe, "poll: write end not a pipe");
+    pipe_write((struct pipe *)wfdp->pipe_ptr, "xyz", 3);
+
+    pfd[0].revents = 0;
+    r = sys_poll(pfd, 1, 0);
+    ASSERT(r == 1,                    "poll: one fd should be ready after write");
+    ASSERT(pfd[0].revents & POLLIN,   "poll: POLLIN should be set after write");
+
+    /* Invalid fd in pollfd should yield POLLNVAL */
+    pfd[0].fd = -1; pfd[0].events = POLLIN; pfd[0].revents = 0;
+    r = sys_poll(pfd, 1, 0);
+    ASSERT(r >= 0,                     "poll: negative fd should not error");
+    ASSERT(pfd[0].revents == POLLNVAL, "poll: negative fd should get POLLNVAL");
+
+    vfs_close(pipefds[0]);
+    vfs_close(pipefds[1]);
+}
+
+/* Test 13: credentials (getuid/setuid/getgid/setgid, umask) */
+static void test_credentials(void) {
+    ASSERT(current != NULL, "credentials: current must be non-NULL");
+
+    /* Initial state: uid=0, gid=0, euid=0, egid=0 (root) */
+    ASSERT(current->uid  == 0, "uid should start at 0");
+    ASSERT(current->euid == 0, "euid should start at 0");
+    ASSERT(current->gid  == 0, "gid should start at 0");
+    ASSERT(current->egid == 0, "egid should start at 0");
+    ASSERT(current->umask == 022, "umask should start at 022");
+
+    /* Verify pgid and sid set to pid on proc_alloc */
+    ASSERT(current->pgid == (pid_t)current->pid, "pgid should equal pid at alloc");
+    ASSERT(current->sid  == (pid_t)current->pid, "sid should equal pid at alloc");
+
+    /* setuid: root can set arbitrary uid */
+    current->uid = 1000;
+    current->euid = 1000;
+    ASSERT(current->uid == 1000, "setuid: uid not updated");
+
+    /* Restore */
+    current->uid = 0; current->euid = 0;
+
+    /* umask change */
+    uint32_t old_umask = current->umask;
+    current->umask = 027;
+    ASSERT(current->umask == 027U, "umask: not updated");
+    current->umask = old_umask;
+}
+
+/* Test 14: chmod / chown / access */
+static void test_chmod_chown_access(void) {
+    int fd = vfs_open("/perm_test", O_CREAT | O_RDWR, 0644);
+    ASSERT(fd >= 0, "chmod: open failed");
+    vfs_close(fd);
+
+    /* chmod: change permissions */
+    int r = vfs_chmod("/perm_test", 0600);
+    ASSERT(r == 0, "chmod: failed");
+
+    struct stat st;
+    r = vfs_stat("/perm_test", &st);
+    ASSERT(r == 0, "chmod: stat failed");
+    ASSERT((st.st_mode & 07777) == 0600, "chmod: mode not updated");
+
+    /* chown: change ownership */
+    r = vfs_chown("/perm_test", 42, 42);
+    ASSERT(r == 0, "chown: failed");
+    r = vfs_stat("/perm_test", &st);
+    ASSERT(r == 0, "chown: stat after chown failed");
+    ASSERT(st.st_uid == 42, "chown: uid not updated");
+    ASSERT(st.st_gid == 42, "chown: gid not updated");
+
+    /* access: F_OK on existing file should succeed */
+    r = vfs_access("/perm_test", 0 /* F_OK */);
+    ASSERT(r == 0, "access: F_OK on existing file failed");
+
+    /* access: F_OK on nonexistent file should fail */
+    r = vfs_access("/no_such_file_xyz", 0);
+    ASSERT(r == -ENOENT, "access: F_OK on missing file should return -ENOENT");
+}
+
+/* Test 15: link / symlink / readlink */
+static void test_link_symlink(void) {
+    /* Create a file */
+    int fd = vfs_open("/link_src", O_CREAT | O_RDWR, 0644);
+    ASSERT(fd >= 0, "link: create source failed");
+    vfs_write(fd, "hello", 5);
+    vfs_close(fd);
+
+    /* Hard link */
+    int r = vfs_link("/link_src", "/link_dst");
+    ASSERT(r == 0, "link: hard link failed");
+
+    /* Both should exist and have the same content */
+    fd = vfs_open("/link_dst", O_RDONLY, 0);
+    ASSERT(fd >= 0, "link: open hard link failed");
+    char buf[8] = {0};
+    ssize_t n = vfs_read(fd, buf, 5);
+    ASSERT(n == 5, "link: read from hard link wrong count");
+    extern int strncmp(const char *, const char *, size_t);
+    ASSERT(strncmp(buf, "hello", 5) == 0, "link: hard link content mismatch");
+    vfs_close(fd);
+
+    /* Symlink */
+    r = vfs_symlink("/link_src", "/sym_link");
+    ASSERT(r == 0, "symlink: creation failed");
+
+    /* readlink */
+    char rbuf[64] = {0};
+    r = vfs_readlink("/sym_link", rbuf, sizeof(rbuf));
+    ASSERT(r > 0, "readlink: returned 0 or negative");
+    extern int strcmp(const char *a, const char *b);
+    ASSERT(strcmp(rbuf, "/link_src") == 0, "readlink: target mismatch");
+
+    /* stat of symlink should show S_IFLNK mode */
+    struct stat st;
+    r = vfs_stat("/sym_link", &st);
+    ASSERT(r == 0, "symlink: stat failed");
+    ASSERT(S_ISLNK(st.st_mode), "symlink: mode should be S_IFLNK");
+}
+
+/* Test 16: nanosleep */
+static void test_nanosleep(void) {
+    struct timespec ts;
+    ts.tv_sec  = 0;
+    ts.tv_nsec = 10 * 1000000;   /* 10 ms */
+    uint64_t before = kernel_uptime_ms();
+    /* nanosleep called directly in kernel — calls timer_sleep_ms */
+    timer_sleep_ms(10);
+    uint64_t after = kernel_uptime_ms();
+    /* Elapsed should be at least 10 ms (may round up) */
+    ASSERT(after >= before, "nanosleep: time went backwards");
+    (void)ts;
+}
+
+/* Test 17: sysinfo */
+static void test_sysinfo(void) {
+    struct sysinfo si;
+    extern void *memset(void *, int, size_t);
+    memset(&si, 0, sizeof(si));
+    /* Call the internal vfs-level helper via proc_count and pmm_free_bytes */
+    si.uptime   = (int64_t)(kernel_uptime_ms() / 1000);
+    si.freeram  = pmm_free_bytes();
+    si.procs    = (uint16_t)proc_count();
+    si.mem_unit = PAGE_SIZE;
+
+    ASSERT(si.uptime >= 0,   "sysinfo: uptime negative");
+    ASSERT(si.freeram > 0,   "sysinfo: freeram should be > 0");
+    ASSERT(si.procs >= 1,    "sysinfo: at least 1 process (idle)");
+    ASSERT(si.mem_unit == PAGE_SIZE, "sysinfo: mem_unit should be PAGE_SIZE");
+}
+#endif /* !__aarch64__ */
+
 void kernel_selftest(void) {
     kprintf("CORE: running BIST...\n");
     selftest_passed = 0;
@@ -449,6 +627,12 @@ void kernel_selftest(void) {
 #ifndef __aarch64__
     test_select();
     test_ftruncate();
+    test_poll();
+    test_credentials();
+    test_chmod_chown_access();
+    test_link_symlink();
+    test_nanosleep();
+    test_sysinfo();
 #endif
 
     kprintf("CORE: BIST passed (%d checks)\n", selftest_passed);

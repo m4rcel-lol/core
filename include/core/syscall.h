@@ -47,7 +47,27 @@
 #define SYS_SELECT      40
 #define SYS_FTRUNCATE   41
 #define SYS_TRUNCATE    42
-#define SYSCALL_COUNT   43
+#define SYS_POLL        43
+#define SYS_GETUID      44
+#define SYS_GETEUID     45
+#define SYS_GETGID      46
+#define SYS_GETEGID     47
+#define SYS_SETUID      48
+#define SYS_SETGID      49
+#define SYS_CHMOD       50
+#define SYS_CHOWN       51
+#define SYS_ACCESS      52
+#define SYS_ALARM       53
+#define SYS_NANOSLEEP   54
+#define SYS_SETSID      55
+#define SYS_GETPGRP     56
+#define SYS_SETPGID     57
+#define SYS_LINK        58
+#define SYS_SYMLINK     59
+#define SYS_READLINK    60
+#define SYS_SYSINFO     61
+#define SYS_UMASK       62
+#define SYSCALL_COUNT   63
 
 struct regs;
 
@@ -104,5 +124,52 @@ typedef struct {
 #define FD_SET(fd, s)   ((s)->bits[(fd)/64] |=  (1ULL << ((fd) % 64)))
 #define FD_CLR(fd, s)   ((s)->bits[(fd)/64] &= ~(1ULL << ((fd) % 64)))
 #define FD_ISSET(fd, s) (!!((s)->bits[(fd)/64] & (1ULL << ((fd) % 64))))
+
+/*
+ * struct pollfd for poll(2)
+ */
+struct pollfd {
+    int     fd;
+    int16_t events;
+    int16_t revents;
+};
+
+/* poll(2) event bits */
+#define POLLIN    0x0001   /* data to read */
+#define POLLPRI   0x0002   /* urgent/priority data */
+#define POLLOUT   0x0004   /* ready to write */
+#define POLLERR   0x0008   /* error (output only) */
+#define POLLHUP   0x0010   /* hangup (output only) */
+#define POLLNVAL  0x0020   /* invalid fd (output only) */
+#define POLLRDNORM 0x0040  /* normal data available (= POLLIN) */
+#define POLLWRNORM 0x0100  /* normal data writable (= POLLOUT) */
+
+/*
+ * struct timespec for nanosleep(2)
+ */
+struct timespec {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+};
+
+/*
+ * struct sysinfo for sysinfo(2)
+ */
+struct sysinfo {
+    int64_t  uptime;         /* seconds since boot */
+    uint64_t loads[3];       /* 1/5/15-min load averages × 65536 (stub: 0) */
+    uint64_t totalram;       /* total usable RAM in bytes */
+    uint64_t freeram;        /* available RAM in bytes */
+    uint64_t sharedram;      /* shared memory (stub: 0) */
+    uint64_t bufferram;      /* buffer memory (stub: 0) */
+    uint64_t totalswap;      /* total swap (stub: 0) */
+    uint64_t freeswap;       /* free swap (stub: 0) */
+    uint16_t procs;          /* number of running processes */
+    uint16_t pad;
+    uint32_t pad2;
+    uint64_t totalhigh;      /* stub: 0 */
+    uint64_t freehigh;       /* stub: 0 */
+    uint32_t mem_unit;       /* memory unit size in bytes (4096) */
+};
 
 #endif /* CORE_SYSCALL_H */

@@ -105,15 +105,31 @@ Makefile       — Build system
 MIT License — (c) CORE Project
 
 === CORE BUILD REPORT ===
-Estimated uncompressed ELF size:   ~330 KB
-Estimated compressed image size:   ~100 KB
+Estimated uncompressed ELF size:   ~380 KB
+Estimated compressed image size:   ~115 KB
 Estimated RAM at idle boot:        ~2 MB
-Syscall table completeness:        43/43 (100%)
+Syscall table completeness:        63/63 (100%)
 fcntl commands:                    F_DUPFD, F_GETFD, F_SETFD, F_GETFL, F_SETFL
 ioctl requests:                    TCGETS, TCSETS/W/F, TCFLSH, TIOCGWINSZ, TIOCSWINSZ, FIONREAD, TIOCGPGRP, TIOCSPGRP
-New syscalls:                      select(2), ftruncate(2), truncate(2)
-Per-process cwd:                   yes (char cwd[256] in struct proc; fork copies; init "/")
-execve argv/envp:                  full System V AMD64 ABI stack frame (strings, pointers, auxv AT_PAGESZ)
+New syscalls (this session):       poll(2), getuid/geteuid/getgid/getegid,
+                                   setuid/setgid, chmod/chown/access,
+                                   alarm/nanosleep, setsid/getpgrp/setpgid,
+                                   link/symlink/readlink, sysinfo/umask
+Per-process credentials:           uid, gid, euid, egid, pgid, sid, umask,
+                                   alarm_deadline_ms in struct proc
+alarm(2):                          proc_check_alarms() called every PIT tick (10 ms)
+symlinks:                          S_IFLNK in tmpfs; target stored as char*;
+                                   vfs_readlink/vfs_symlink dispatch through ops
+hard links:                        tmpfs_link increments refcount; stat shows nlink
+ISO build framework:               tools/build-iso.sh (BIOS+UEFI hybrid, initrd,
+                                   versioning, SHA-256/MD5, JSON manifest, logging)
+                                   Makefile targets: iso-release, iso-debug,
+                                   iso-uefi, iso-all
+initrd builder:                    tools/mkinitrd.sh (newc cpio, gz/xz/none,
+                                   staging/ tree, mandatory dir check)
+initrd staging:                    staging/{sbin/init,bin,lib,etc,dev,proc,sys,tmp}
+GRUB config template:              grub/grub.cfg.in (version vars, serial console,
+                                   debug/normal/recovery/rescue entries)
 Tested on:                         QEMU 8.x, x86_64
 Boot time (QEMU, -m 32M):          < 1 second
 Known limitations:

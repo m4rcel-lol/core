@@ -128,7 +128,8 @@ C_OBJS  := $(C_SRCS:.c=.o)
 S_OBJS  := $(S_SRCS:.S=.o)
 OBJS    := $(S_OBJS) $(C_OBJS)
 
-.PHONY: all clean qemu qemu-initrd qemu-arm64 iso img
+.PHONY: all clean qemu qemu-initrd qemu-arm64 \
+        iso iso-release iso-debug iso-uefi iso-all img
 
 all: $(ELF)
 
@@ -150,6 +151,59 @@ iso: $(ELF)
 	printf 'set timeout=0\nset default=0\n\nmenuentry "CORE" {\n  multiboot2 /boot/$(TARGET).elf\n  boot\n}\n' \
 	    > isodir/boot/grub/grub.cfg
 	grub-mkrescue -o $(ISO) isodir
+
+# ── Advanced ISO framework (tools/build-iso.sh) ───────────────────────────────
+ISO_ARCH     ?= $(ARCH)
+ISO_OUTPUT   ?= dist
+ISO_STAGING  ?= staging
+ISO_COMPRESS ?= gz
+ISO_CMDLINE  ?=
+ISO_JOBS     ?= $(shell nproc 2>/dev/null || echo 4)
+
+# Standard release ISO (BIOS + optional UEFI, gzip-compressed initrd)
+iso-release: all
+	bash tools/build-iso.sh \
+	    --arch=$(ISO_ARCH) \
+	    --variant=release \
+	    --output=$(ISO_OUTPUT) \
+	    --staging=$(ISO_STAGING) \
+	    --initrd-compress=$(ISO_COMPRESS) \
+	    --jobs=$(ISO_JOBS) \
+	    $(if $(ISO_CMDLINE),--cmdline='$(ISO_CMDLINE)')
+
+# Debug ISO (same as release but with -g and DEBUG defined)
+iso-debug: all
+	bash tools/build-iso.sh \
+	    --arch=$(ISO_ARCH) \
+	    --variant=debug \
+	    --output=$(ISO_OUTPUT) \
+	    --staging=$(ISO_STAGING) \
+	    --initrd-compress=$(ISO_COMPRESS) \
+	    --jobs=$(ISO_JOBS) \
+	    $(if $(ISO_CMDLINE),--cmdline='$(ISO_CMDLINE)')
+
+# UEFI-capable release ISO (embeds grub-mkimage EFI stub)
+iso-uefi: all
+	bash tools/build-iso.sh \
+	    --arch=$(ISO_ARCH) \
+	    --variant=release \
+	    --output=$(ISO_OUTPUT) \
+	    --staging=$(ISO_STAGING) \
+	    --initrd-compress=$(ISO_COMPRESS) \
+	    --jobs=$(ISO_JOBS) \
+	    --uefi \
+	    $(if $(ISO_CMDLINE),--cmdline='$(ISO_CMDLINE)')
+
+# Build both debug and release ISOs
+iso-all: all
+	bash tools/build-iso.sh \
+	    --arch=$(ISO_ARCH) \
+	    --variant=all \
+	    --output=$(ISO_OUTPUT) \
+	    --staging=$(ISO_STAGING) \
+	    --initrd-compress=$(ISO_COMPRESS) \
+	    --jobs=$(ISO_JOBS) \
+	    $(if $(ISO_CMDLINE),--cmdline='$(ISO_CMDLINE)')
 
 img: $(BIN)
 	dd if=/dev/zero of=$(TARGET).img bs=512 count=2880
@@ -193,3 +247,4 @@ clean:
 	rm -f $(if $(ISO),$(ISO)) core.iso core-arm64.elf core-arm64.bin
 	rm -f core.img core-arm64.img
 	rm -rf isodir
+	rm -rf dist/

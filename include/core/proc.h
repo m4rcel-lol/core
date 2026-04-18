@@ -47,6 +47,17 @@ struct proc {
     int              exit_code;
     uint8_t          priority;
     uint8_t          fpu_used;    /* lazy FPU: nonzero when FPU state is valid */
+    /* Process credentials */
+    uint32_t         uid;         /* real user ID */
+    uint32_t         gid;         /* real group ID */
+    uint32_t         euid;        /* effective user ID */
+    uint32_t         egid;        /* effective group ID */
+    /* Process group / session */
+    pid_t            pgid;        /* process group ID */
+    pid_t            sid;         /* session ID */
+    /* Misc */
+    uint32_t         umask;       /* file creation mask */
+    uint64_t         alarm_deadline_ms; /* uptime_ms when SIGALRM fires; 0 = off */
     char             name[PROC_NAME_LEN];
     char             cwd[256];           /* per-process working directory */
     struct proc     *next;
@@ -54,7 +65,12 @@ struct proc {
                             - sizeof(struct regs) - sizeof(uint64_t *)
                             - sizeof(int)*FD_MAX - sizeof(uint64_t)*2
                             - sizeof(struct sigaction)*64 - sizeof(int)
-                            - sizeof(uint8_t)*2 - PROC_NAME_LEN
+                            - sizeof(uint8_t)*2
+                            - sizeof(uint32_t)*4   /* uid, gid, euid, egid */
+                            - sizeof(pid_t)*2      /* pgid, sid */
+                            - sizeof(uint32_t)     /* umask */
+                            - sizeof(uint64_t)     /* alarm_deadline_ms */
+                            - PROC_NAME_LEN
                             - 256 /* cwd */
                             - sizeof(struct proc *)];
 };
@@ -68,6 +84,8 @@ int  sys_wait(int *status);
 int  proc_execve(const char *path, char *argv[], char *envp[]);
 int  proc_kthread(void (*fn)(void *), void *arg);
 uint8_t *proc_fpu_state(struct proc *p);
+int  proc_count(void);
+void proc_check_alarms(uint64_t now_ms);
 
 extern struct proc *current;
 

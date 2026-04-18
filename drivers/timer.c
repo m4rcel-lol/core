@@ -32,6 +32,8 @@ void timer_init(void) {
 
 void timer_irq_handler(void) {
     jiffies++;
+    uint64_t now_ms = jiffies * 10;
+
     /* Wake sleeping processes */
     for (int i = 0; i < SLEEP_MAX; i++) {
         if (sleep_table[i].in_use && jiffies >= sleep_table[i].wake_at) {
@@ -42,6 +44,10 @@ void timer_irq_handler(void) {
             }
         }
     }
+
+    /* Check SIGALRM deadlines for all processes */
+    proc_check_alarms(now_ms);
+
     extern void sched_tick(void);
     sched_tick();
 }
