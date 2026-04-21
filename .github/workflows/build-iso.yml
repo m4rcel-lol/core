@@ -64,8 +64,7 @@ jobs:
             --output=out/release \
             --staging=staging \
             --initrd-compress=none \
-            --jobs="$(nproc)" \
-            --serial
+            --jobs="$(nproc)"
 
       - name: Smoke test BIOS release ISO
         shell: bash
@@ -123,8 +122,7 @@ jobs:
             --output=out/debug \
             --staging=staging \
             --initrd-compress=none \
-            --jobs="$(nproc)" \
-            --serial
+            --jobs="$(nproc)"
 
       - name: Build UEFI release ISO
         run: |
@@ -136,8 +134,7 @@ jobs:
             --staging=staging \
             --initrd-compress=none \
             --jobs="$(nproc)" \
-            --uefi \
-            --serial
+            --uefi
 
       - name: Upload ISO artifacts
         if: always()

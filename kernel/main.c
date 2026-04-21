@@ -28,6 +28,7 @@ extern void sched_enqueue(struct proc *p);
 extern const char __core_version[];
 extern void kernel_panic(const char *msg);
 extern int strcmp(const char *a, const char *b);
+extern int strncmp(const char *a, const char *b, size_t n);
 extern size_t strlen(const char *s);
 extern char *strncpy(char *dst, const char *src, size_t n);
 extern void *memset(void *dst, int c, size_t n);
@@ -177,9 +178,16 @@ static void builtin_fetch(void) {
 
 static void builtin_help(void) {
     kprintf("Built-in commands:\n");
-    kprintf("  help   show this command list\n");
-    kprintf("  fetch  show a CORE fastfetch\n");
-    kprintf("  clear  clear the VGA text console\n");
+    kprintf("  help            show this command list\n");
+    kprintf("  fetch           show a CORE fastfetch\n");
+    kprintf("  clear           clear the VGA text console\n");
+    kprintf("  pwd             print current directory\n");
+    kprintf("  ls [path]       list a directory\n");
+    kprintf("  cd [path]       change current directory\n");
+    kprintf("  cat <path>      print a file\n");
+    kprintf("  echo <text>     print text\n");
+    kprintf("  uname           show kernel identity\n");
+    kprintf("  reboot          reboot the machine\n");
 }
 
 static char *trim_command(char *line) {
@@ -195,8 +203,193 @@ static char *trim_command(char *line) {
     return line;
 }
 
+static char *split_command_args(char *cmd) {
+    while (*cmd && *cmd != ' ' && *cmd != '\t') cmd++;
+    if (*cmd == '\0') return cmd;
+    *cmd++ = '\0';
+    while (*cmd == ' ' || *cmd == '\t') cmd++;
+    return cmd;
+}
+
+static const char *shell_cwd(void) {
+    if (current && current->cwd[0]) return current->cwd;
+    return "/";
+}
+
+static int shell_resolve_path(const char *input, char *out, size_t size) {
+    size_t pos = 0;
+    const char *cwd = shell_cwd();
+
+    if (!out || size < 2) return -EINVAL;
+    if (!input || input[0] == '\0' || strcmp(input, ".") == 0) {
+        strncpy(out, cwd, size - 1);
+        out[size - 1] = '\0';
+        return 0;
+    }
+    if (input[0] == '/') {
+        strncpy(out, input, size - 1);
+        out[size - 1] = '\0';
+        return 0;
+    }
+
+    while (cwd[pos] && pos + 1 < size) {
+        out[pos] = cwd[pos];
+        pos++;
+    }
+    if (pos == 0) out[pos++] = '/';
+    if (pos > 1 && out[pos - 1] != '/' && pos + 1 < size) out[pos++] = '/';
+
+    for (size_t i = 0; input[i] && pos + 1 < size; i++) {
+        out[pos++] = input[i];
+    }
+    out[pos] = '\0';
+    return 0;
+}
+
+static void shell_print_file(const char *path) {
+    char buf[128];
+    int fd = vfs_open(path, O_RDONLY, 0);
+    if (fd < 0) {
+        kprintf("cat: cannot open %s\n", path);
+        return;
+    }
+
+    for (;;) {
+        ssize_t n = vfs_read(fd, buf, sizeof(buf));
+        if (n < 0) {
+            kprintf("cat: read failed for %s\n", path);
+            break;
+        }
+        if (n == 0) break;
+        for (ssize_t i = 0; i < n; i++) kprintf("%c", buf[i]);
+    }
+    vfs_close(fd);
+}
+
+static void shell_show_motd(void) {
+    struct inode *motd = vfs_resolve("/etc/motd");
+    if (!motd) return;
+    shell_print_file("/etc/motd");
+    kprintf("\n");
+}
+
+static void shell_cmd_pwd(void) {
+    kprintf("%s\n", shell_cwd());
+}
+
+static void shell_cmd_uname(void) {
+    kprintf("CORE %s %s\n", __core_version, boot_arch_name());
+}
+
+static void shell_cmd_echo(const char *args) {
+    kprintf("%s\n", args && args[0] ? args : "");
+}
+
+static void shell_cmd_cd(const char *args) {
+    char path[256];
+    struct inode *ino;
+
+    if (!args || args[0] == '\0') args = "/";
+    if (shell_resolve_path(args, path, sizeof(path)) < 0) {
+        kprintf("cd: invalid path\n");
+        return;
+    }
+
+    ino = vfs_resolve(path);
+    if (!ino) {
+        kprintf("cd: no such directory: %s\n", args);
+        return;
+    }
+    if (!S_ISDIR(ino->mode)) {
+        kprintf("cd: not a directory: %s\n", args);
+        return;
+    }
+
+    if (current) {
+        strncpy(current->cwd, path, sizeof(current->cwd) - 1);
+        current->cwd[sizeof(current->cwd) - 1] = '\0';
+    }
+}
+
+static void shell_cmd_ls(const char *args) {
+    char path[256];
+    struct stat st;
+    struct dirent entries[16];
+    int fd;
+    int first = 1;
+
+    if (shell_resolve_path(args && args[0] ? args : ".", path, sizeof(path)) < 0) {
+        kprintf("ls: invalid path\n");
+        return;
+    }
+    if (vfs_stat(path, &st) < 0) {
+        kprintf("ls: cannot access %s\n", path);
+        return;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        kprintf("%s\n", path);
+        return;
+    }
+
+    fd = vfs_open(path, O_RDONLY, 0);
+    if (fd < 0) {
+        kprintf("ls: cannot open %s\n", path);
+        return;
+    }
+
+    for (;;) {
+        int n = vfs_readdir(fd, entries, ARRAY_SIZE(entries));
+        if (n < 0) {
+            kprintf("ls: failed to read %s\n", path);
+            break;
+        }
+        if (n == 0) break;
+        for (int i = 0; i < n; i++) {
+            kprintf(first ? "%s%s" : "  %s%s",
+                    entries[i].d_name,
+                    entries[i].d_type == DT_DIR ? "/" : "");
+            first = 0;
+        }
+    }
+    vfs_close(fd);
+    kprintf("\n");
+}
+
+static void shell_cmd_cat(const char *args) {
+    char path[256];
+    struct stat st;
+
+    if (!args || args[0] == '\0') {
+        kprintf("cat: missing file operand\n");
+        return;
+    }
+    if (shell_resolve_path(args, path, sizeof(path)) < 0) {
+        kprintf("cat: invalid path\n");
+        return;
+    }
+    if (vfs_stat(path, &st) < 0) {
+        kprintf("cat: cannot access %s\n", args);
+        return;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        kprintf("cat: %s: is a directory\n", args);
+        return;
+    }
+    shell_print_file(path);
+    if (st.st_size == 0 || path[0] == '\0') return;
+    kprintf("\n");
+}
+
+static void shell_cmd_reboot(void) {
+    struct { uint16_t limit; uint64_t base; } __attribute__((packed)) null_idt = {0, 0};
+    kprintf("CORE: rebooting...\n");
+    __asm__ volatile("cli; lidt %0; int $3" : : "m"(null_idt));
+    for (;;) __asm__ volatile("hlt");
+}
+
 static void run_builtin_command(char *line) {
     char *cmd = trim_command(line);
+    char *args = split_command_args(cmd);
 
     if (cmd[0] == '\0') return;
     if (strcmp(cmd, "help") == 0) {
@@ -211,20 +404,50 @@ static void run_builtin_command(char *line) {
         vga_init();
         return;
     }
+    if (strcmp(cmd, "pwd") == 0) {
+        shell_cmd_pwd();
+        return;
+    }
+    if (strcmp(cmd, "uname") == 0) {
+        shell_cmd_uname();
+        return;
+    }
+    if (strcmp(cmd, "echo") == 0) {
+        shell_cmd_echo(args);
+        return;
+    }
+    if (strcmp(cmd, "cd") == 0) {
+        shell_cmd_cd(args);
+        return;
+    }
+    if (strcmp(cmd, "ls") == 0) {
+        shell_cmd_ls(args);
+        return;
+    }
+    if (strcmp(cmd, "cat") == 0) {
+        shell_cmd_cat(args);
+        return;
+    }
+    if (strcmp(cmd, "reboot") == 0) {
+        shell_cmd_reboot();
+        return;
+    }
 
     kprintf("core: unknown command: %s\n", cmd);
 }
 
 static void builtin_shell(void) {
     char line[128];
+    char hostname[64];
 
-    kprintf("CORE kernel console ready\n");
-    kprintf("Type 'fetch' for system info or 'help' for commands\n\n");
+    read_hostname(hostname, sizeof(hostname));
+    kprintf("CORE shell starting on %s\n", hostname);
+    shell_show_motd();
 
     for (;;) {
         size_t len = 0;
         memset(line, 0, sizeof(line));
-        kprintf("core# ");
+        kprintf("root@%s:%s# ", hostname, shell_cwd());
 
         for (;;) {
             char c = keyboard_getchar();

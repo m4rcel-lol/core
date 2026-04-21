@@ -344,6 +344,9 @@ else
     cat > "$GRUB_CFG_OUT" <<GRUBEOF
 set default=0
 set timeout=5
+set gfxpayload=text
+terminal_input console
+terminal_output console
 
 menuentry "CORE OS $VERSION ($ARCH)" {
     multiboot2 $KERNEL_ISO_PATH $CMDLINE

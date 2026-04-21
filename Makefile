@@ -162,7 +162,7 @@ iso: $(ELF) initrd.cpio
 	mkdir -p isodir/boot/grub
 	cp $(ELF) isodir/boot/$(TARGET).elf
 	cp initrd.cpio isodir/boot/initrd.cpio
-	printf 'set timeout=5\nset default=0\n\nmenuentry "CORE" {\n  multiboot2 /boot/$(TARGET).elf\n  module2 /boot/initrd.cpio initrd\n  boot\n}\n' \
+	printf 'set timeout=5\nset default=0\nset gfxpayload=text\nterminal_input console\nterminal_output console\n\nmenuentry "CORE" {\n  multiboot2 /boot/$(TARGET).elf\n  module2 /boot/initrd.cpio initrd\n  boot\n}\n' \
 	    > isodir/boot/grub/grub.cfg
 	grub-mkrescue -o $(ISO) isodir
 
