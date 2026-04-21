@@ -82,7 +82,7 @@ AS      := $(CC)
 CFLAGS  := -Os -std=c11 -ffreestanding -fno-builtin -fno-stack-protector \
            -ffunction-sections -fdata-sections -fno-unwind-tables \
            -fno-asynchronous-unwind-tables -fno-exceptions \
-           -fomit-frame-pointer -mno-red-zone \
+           -fomit-frame-pointer -mno-red-zone -mgeneral-regs-only \
            -Wall -Wextra -Werror -Iinclude
 
 ASFLAGS := -ffreestanding -Iinclude

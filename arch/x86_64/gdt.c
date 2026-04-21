@@ -94,6 +94,15 @@ void gdt_init(void) {
     /* Load TSS selector (index 5, selector = 5*8 = 0x28) */
     __asm__ volatile("ltr %0" : : "r"((uint16_t)0x28));
 
+    /* Advertise OS support for SSE/FXSAVE before any task uses XMM state.
+     * We still compile the kernel without vector register usage so early boot
+     * code does not fault before the IDT is installed. */
+    uint64_t cr4;
+    __asm__ volatile("movq %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1ULL << 9);   /* OSFXSR: enable FXSAVE/FXRSTOR and SSE state */
+    cr4 |= (1ULL << 10);  /* OSXMMEXCPT: route SIMD exceptions correctly */
+    __asm__ volatile("movq %0, %%cr4" : : "r"(cr4) : "memory");
+
     /* Initialize x87 FPU and then set CR0.TS to arm lazy FPU context switching.
      * The first FPU instruction executed by any task will trigger #NM (vec 7),
      * which the IDT handler resolves by clearing TS and restoring the task's state. */

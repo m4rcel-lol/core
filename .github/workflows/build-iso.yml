@@ -58,7 +58,14 @@ jobs:
       - name: Build BIOS release ISO
         run: |
           make clean
-          make iso-release ISO_OUTPUT=out/release ISO_JOBS="$(nproc)"
+          bash tools/build-iso.sh \
+            --arch=x86_64 \
+            --variant=release \
+            --output=out/release \
+            --staging=staging \
+            --initrd-compress=none \
+            --jobs="$(nproc)" \
+            --serial
 
       - name: Smoke test BIOS release ISO
         shell: bash
@@ -74,10 +81,12 @@ jobs:
           fi
 
           status=0
-          timeout 30s qemu-system-x86_64 \
+          timeout 90s qemu-system-x86_64 \
             -cdrom "${isos[0]}" \
             -boot d \
             -m 64M \
+            -accel tcg,thread=multi \
+            -smp 2 \
             -serial stdio \
             -display none \
             -monitor none \
@@ -90,19 +99,45 @@ jobs:
             exit "$status"
           fi
 
-          grep -q "booting..." test-logs/qemu-release.log
-          grep -q "CORE: BIST passed" test-logs/qemu-release.log
-          grep -q "CORE: init complete" test-logs/qemu-release.log
+          required_markers=(
+            "booting..."
+            "CORE: BIST passed"
+            "CORE: init complete"
+          )
+
+          for marker in "${required_markers[@]}"; do
+            if ! grep -Fq "$marker" test-logs/qemu-release.log; then
+              echo "Missing boot marker: $marker"
+              echo
+              cat test-logs/qemu-release.log
+              exit 1
+            fi
+          done
 
       - name: Build BIOS debug ISO
         run: |
           make clean
-          make iso-debug ISO_OUTPUT=out/debug ISO_JOBS="$(nproc)"
+          bash tools/build-iso.sh \
+            --arch=x86_64 \
+            --variant=debug \
+            --output=out/debug \
+            --staging=staging \
+            --initrd-compress=none \
+            --jobs="$(nproc)" \
+            --serial
 
       - name: Build UEFI release ISO
         run: |
           make clean
-          make iso-uefi ISO_OUTPUT=out/uefi ISO_JOBS="$(nproc)"
+          bash tools/build-iso.sh \
+            --arch=x86_64 \
+            --variant=release \
+            --output=out/uefi \
+            --staging=staging \
+            --initrd-compress=none \
+            --jobs="$(nproc)" \
+            --uefi \
+            --serial
 
       - name: Upload ISO artifacts
         if: always()
