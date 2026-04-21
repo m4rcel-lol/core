@@ -69,6 +69,7 @@ run() {
         echo "${YELLOW}[dry]${RESET} $*"
     else
         if [ -n "$LOG_FILE" ]; then
+            mkdir -p "$(dirname "$LOG_FILE")"
             "$@" 2>&1 | tee -a "$LOG_FILE"
         else
             "$@"
@@ -231,7 +232,7 @@ if [ "$VARIANT" = "all" ]; then
 fi
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
-run mkdir -p "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR"
 : > "$LOG_FILE"
 
 echo "==============================================================="  | tee -a "$LOG_FILE"
