@@ -27,6 +27,7 @@ extern struct proc *proc_alloc(void);
 extern void sched_enqueue(struct proc *p);
 extern const char __core_version[];
 extern void kernel_panic(const char *msg);
+extern void sched_yield(void);
 extern int strcmp(const char *a, const char *b);
 extern int strncmp(const char *a, const char *b, size_t n);
 extern size_t strlen(const char *s);
@@ -64,6 +65,7 @@ static struct mb2_mmap_entry mmap_entries[64];
 static size_t mmap_count = 0;
 static uint64_t initrd_start = 0;
 static uint64_t initrd_size  = 0;
+static volatile int builtin_shell_ready = 0;
 
 static uint64_t boot_total_ram_bytes(void) {
     uint64_t total = 0;
@@ -484,6 +486,9 @@ static void builtin_init(void *arg) {
         timer_sleep_ms(1000);
     }
 #else
+    while (!builtin_shell_ready) {
+        sched_yield();
+    }
     builtin_shell();
 #endif
 }
@@ -635,6 +640,7 @@ void kmain(uint32_t magic, uint64_t mb2_info) {
 
     /* 18. Selftest */
     kernel_selftest();
+    builtin_shell_ready = 1;
 
     /* 19. Launch PID 1 (already done in initrd_mount or fallback above) */
 
