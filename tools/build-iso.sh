@@ -57,7 +57,11 @@ QUIET=0
 DRY_RUN=0
 LOG_FILE=""
 
-log()  { [ "$QUIET" -eq 0 ] && echo "${BLUE}[build]${RESET} $*"; }
+log()  {
+    if [ "$QUIET" -eq 0 ]; then
+        echo "${BLUE}[build]${RESET} $*"
+    fi
+}
 ok()   { echo "${GREEN}[  ok ]${RESET} $*"; }
 warn() { echo "${YELLOW}[ warn]${RESET} $*" >&2; }
 err()  { echo "${RED}[error]${RESET} $*" >&2; }
@@ -202,7 +206,9 @@ check_deps() {
             missing=$((missing + 1))
         fi
     done
-    [ "$missing" -gt 0 ] && die "Install missing tools and retry."
+    if [ "$missing" -gt 0 ]; then
+        die "Install missing tools and retry."
+    fi
 }
 
 # ── Build variants ────────────────────────────────────────────────────────────
