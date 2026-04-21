@@ -32,21 +32,21 @@ menuentry "CORE OS @@VERSION@@ (@@ARCH@@)" --class os --class core {
     echo "Loading CORE kernel @@VERSION@@ (@@ARCH@@) built @@DATE@@..."
     multiboot2 @@KERNEL@@ @@CMDLINE@@
     echo "Loading initrd..."
-    module2 @@INITRD@@ initrd
+@@MODULE_LINE@@
     boot
 }
 
 menuentry "CORE OS @@VERSION@@ — serial console" --class os {
     echo "Loading CORE (serial mode)..."
     multiboot2 @@KERNEL@@ console=ttyS0,115200 @@CMDLINE@@
-    module2 @@INITRD@@ initrd
+@@MODULE_LINE@@
     boot
 }
 
 menuentry "CORE OS @@VERSION@@ — debug (verbose boot)" --class debug {
     echo "Loading CORE (debug mode)..."
     multiboot2 @@KERNEL@@ debug=1 @@CMDLINE@@
-    module2 @@INITRD@@ initrd
+@@MODULE_LINE@@
     boot
 }
 

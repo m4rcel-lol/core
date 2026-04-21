@@ -7,6 +7,8 @@
 .set HEADER_CHECKSUM,     -(MULTIBOOT2_MAGIC + MULTIBOOT2_ARCH_X86 + HEADER_LENGTH)
 
 .set KERNEL_STACK_SIZE,   16384
+.set BOOT_GDT_CODE_SEL,   0x08
+.set BOOT_GDT_DATA_SEL,   0x10
 
 .section .multiboot, "a"
 .align 8
@@ -46,7 +48,19 @@ early_pdpt_high:
 early_pd:
     .skip 4096
 
-.section .text
+.section .rodata, "a"
+.align 8
+boot_gdt:
+    .quad 0x0000000000000000
+    .quad 0x00AF9A000000FFFF
+    .quad 0x00AF92000000FFFF
+boot_gdt_end:
+
+boot_gdt_ptr:
+    .word boot_gdt_end - boot_gdt - 1
+    .long boot_gdt
+
+.section .text.boot, "ax"
 .global _start
 .code32
 _start:
@@ -57,6 +71,13 @@ _start:
     pushl %ebx         /* save MB2 info */
     pushl $0
     pushl %eax         /* save MB2 magic */
+
+    /* Load a minimal long-mode compatible GDT before the far jump. */
+    lgdt boot_gdt_ptr
+    movw $BOOT_GDT_DATA_SEL, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %ss
 
     /* Set up early page tables for long mode */
     /* PML4[0] -> early_pdpt_low (identity map) */
@@ -113,11 +134,11 @@ _start:
     movl %eax, %cr0
 
     /* Far jump to 64-bit code */
-    ljmpl $0x08, $start64
+    ljmpl $BOOT_GDT_CODE_SEL, $start64
 
 .code64
 start64:
-    movw $0x10, %ax
+    movw $BOOT_GDT_DATA_SEL, %ax
     movw %ax, %ds
     movw %ax, %es
     movw %ax, %ss

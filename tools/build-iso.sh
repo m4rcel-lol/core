@@ -16,7 +16,7 @@
 #   --version=VER           Override version string
 #   --staging=DIR           initrd staging tree               (default: staging/)
 #   --initrd-compress=gz|xz|none
-#                           initrd compression                 (default: gz)
+#                           initrd compression                 (default: none)
 #   --jobs=N                Parallel make jobs                 (default: nproc)
 #   --serial                Enable GRUB serial console in cfg
 #   --no-kernel-build       Skip kernel compilation (use existing ELF)
@@ -82,7 +82,7 @@ VARIANT="release"
 OUTPUT_DIR="dist"
 VERSION=""
 STAGING_DIR="staging"
-INITRD_COMPRESS="gz"
+INITRD_COMPRESS="none"
 JOBS="$(nproc 2>/dev/null || echo 4)"
 SERIAL=0
 SKIP_KERNEL_BUILD=0
@@ -133,6 +133,11 @@ case "$INITRD_COMPRESS" in
     gz|xz|none) ;;
     *) die "Unknown initrd compression: $INITRD_COMPRESS (use gz, xz, or none)" ;;
 esac
+
+if [ "$SKIP_INITRD" -eq 0 ] && [ "$INITRD_COMPRESS" != "none" ]; then
+    warn "Compressed initrd modules are not bootable yet; using raw cpio instead"
+    INITRD_COMPRESS="none"
+fi
 
 # ── Version detection ─────────────────────────────────────────────────────────
 detect_version() {
@@ -312,6 +317,10 @@ GRUB_CFG_OUT="$ISO_STAGING/boot/grub/grub.cfg"
 
 KERNEL_ISO_PATH="/boot/${KERNEL_BASE}.elf"
 INITRD_REF="${INITRD_ISO_PATH:-(no initrd)}"
+MODULE_LINE=""
+if [ -n "$INITRD_ISO_PATH" ]; then
+    MODULE_LINE="    module2 ${INITRD_ISO_PATH} initrd"
+fi
 
 if [ -f "$GRUB_CFG_IN" ]; then
     sed \
@@ -320,6 +329,7 @@ if [ -f "$GRUB_CFG_IN" ]; then
         -e "s|@@DATE@@|$BUILD_DATE_SHORT|g" \
         -e "s|@@KERNEL@@|$KERNEL_ISO_PATH|g" \
         -e "s|@@INITRD@@|${INITRD_ISO_PATH:-/boot/no-initrd}|g" \
+        -e "s|@@MODULE_LINE@@|$MODULE_LINE|g" \
         -e "s|@@CMDLINE@@|$CMDLINE|g" \
         "$GRUB_CFG_IN" > "$GRUB_CFG_OUT"
 else

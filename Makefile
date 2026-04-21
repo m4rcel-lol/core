@@ -128,6 +128,9 @@ S_SRCS := \
 
 endif  # ARCH
 
+CFLAGS  += $(EXTRA_CFLAGS)
+ASFLAGS += $(EXTRA_CFLAGS)
+
 C_OBJS  := $(C_SRCS:.c=.o)
 S_OBJS  := $(S_SRCS:.S=.o)
 OBJS    := $(S_OBJS) $(C_OBJS)
@@ -149,10 +152,17 @@ $(ELF): $(OBJS)
 $(BIN): $(ELF)
 	$(OBJCOPY) -O binary $< $@
 
-iso: $(ELF)
+initrd.cpio:
+	bash tools/mkinitrd.sh \
+	    --staging=$(ISO_STAGING) \
+	    --output=$@ \
+	    --compress=none
+
+iso: $(ELF) initrd.cpio
 	mkdir -p isodir/boot/grub
 	cp $(ELF) isodir/boot/$(TARGET).elf
-	printf 'set timeout=0\nset default=0\n\nmenuentry "CORE" {\n  multiboot2 /boot/$(TARGET).elf\n  boot\n}\n' \
+	cp initrd.cpio isodir/boot/initrd.cpio
+	printf 'set timeout=5\nset default=0\n\nmenuentry "CORE" {\n  multiboot2 /boot/$(TARGET).elf\n  module2 /boot/initrd.cpio initrd\n  boot\n}\n' \
 	    > isodir/boot/grub/grub.cfg
 	grub-mkrescue -o $(ISO) isodir
 
@@ -160,11 +170,11 @@ iso: $(ELF)
 ISO_ARCH     ?= $(ARCH)
 ISO_OUTPUT   ?= dist
 ISO_STAGING  ?= staging
-ISO_COMPRESS ?= gz
+ISO_COMPRESS ?= none
 ISO_CMDLINE  ?=
 ISO_JOBS     ?= $(shell nproc 2>/dev/null || echo 4)
 
-# Standard release ISO (BIOS + optional UEFI, gzip-compressed initrd)
+# Standard release ISO (BIOS + optional UEFI, raw cpio initrd)
 iso-release: all
 	bash tools/build-iso.sh \
 	    --arch=$(ISO_ARCH) \
@@ -249,6 +259,7 @@ qemu-arm64: $(ELF)
 clean:
 	rm -f $(OBJS) $(ELF) $(BIN)
 	rm -f $(if $(ISO),$(ISO)) core.iso core-arm64.elf core-arm64.bin
+	rm -f initrd.cpio initrd.cpio.gz initrd.cpio.xz
 	rm -f core.img core-arm64.img
 	rm -rf isodir
 	rm -rf dist/

@@ -11,7 +11,7 @@
 # Options:
 #   --staging=DIR       Source staging tree            (required)
 #   --output=FILE       Output cpio file (before ext)  (default: initrd.cpio)
-#   --compress=gz|xz|none  Compression                 (default: gz)
+#   --compress=gz|xz|none  Compression                 (default: none)
 #   --owner=UID:GID     Force owner in archive         (default: 0:0)
 #   --verbose           Verbose cpio output
 #   --help              Show this help and exit
@@ -41,7 +41,7 @@ die()  { echo "ERROR: $*" >&2; exit 1; }
 # ── Defaults ──────────────────────────────────────────────────────────────────
 STAGING_DIR=""
 OUTPUT_FILE="initrd.cpio"
-COMPRESS="gz"
+COMPRESS="none"
 OWNER="0:0"
 VERBOSE=0
 

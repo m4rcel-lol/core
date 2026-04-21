@@ -180,7 +180,7 @@ int proc_execve(const char *path, char *argv[], char *envp[]) {
     uint64_t  sp   = 0;
     uint64_t  entry = elf_load(path, argv, envp, &pml4, &sp);
     if (!entry || !pml4) {
-        kprintf("CORE: exec(%s) failed: not a valid ELF64\n", path);
+        kprintf("CORE: exec(%s) failed\n", path);
         return -ENOEXEC;
     }
 
@@ -206,6 +206,15 @@ int proc_execve(const char *path, char *argv[], char *envp[]) {
     return (int)p->pid;
 }
 
+static void proc_kthread_entry(void (*fn)(void *), void *arg) {
+    fn(arg);
+    sys_exit(0);
+    for (;;) {
+        extern void sched_yield(void);
+        sched_yield();
+    }
+}
+
 int proc_kthread(void (*fn)(void *), void *arg) {
     struct proc *p = proc_alloc();
     if (!p) return -ENOMEM;
@@ -213,15 +222,21 @@ int proc_kthread(void (*fn)(void *), void *arg) {
     void *stack_phys = pmm_alloc(0);
     if (!stack_phys) { proc_free(p); return -ENOMEM; }
     uint64_t stack_top = (uint64_t)PHYS_TO_VIRT(stack_phys) + PAGE_SIZE;
-    /* Set up stack with fn and arg for a simple trampoline */
-    stack_top -= sizeof(uint64_t);
-    *(uint64_t *)stack_top = (uint64_t)arg;
-    p->ctx.rsp = stack_top;
-    p->ctx.rip = (uint64_t)fn;
-    p->ctx.rdi = (uint64_t)arg;
+
+    uint8_t *b = (uint8_t *)&p->ctx;
+    for (size_t i = 0; i < sizeof(p->ctx); i++) b[i] = 0;
+
+    p->ctx.rsp    = stack_top;
+    p->ctx.rip    = (uint64_t)proc_kthread_entry;
+    p->ctx.rdi    = (uint64_t)fn;
+    p->ctx.rsi    = (uint64_t)arg;
+    p->ctx.rflags = 0x202ULL;
     p->priority = PRIO_NORMAL;
     p->state    = PROC_READY;
     p->pml4     = vmm_get_kernel_pml4();
+    p->fpu_used = 0;
+    strncpy(p->name, "kthread", PROC_NAME_LEN - 1);
+    p->name[PROC_NAME_LEN - 1] = '\0';
     sched_enqueue(p);
     return (int)p->pid;
 }

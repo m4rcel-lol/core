@@ -217,6 +217,13 @@ uint64_t elf_load(const char *path, char *argv[], char *envp[],
         return 0;
     }
 
+    if (ehdr.e_ident[EI_MAG0] == (uint8_t)'#' &&
+        ehdr.e_ident[EI_MAG1] == (uint8_t)'!') {
+        kprintf("elf: scripts are not executable yet: %s\n", path);
+        vfs_close(fd);
+        return 0;
+    }
+
     if (ehdr.e_ident[EI_MAG0] != 0x7fU ||
         ehdr.e_ident[EI_MAG1] != (uint8_t)'E' ||
         ehdr.e_ident[EI_MAG2] != (uint8_t)'L' ||
