@@ -9,6 +9,7 @@
 .set KERNEL_STACK_SIZE,   16384
 .set BOOT_GDT_CODE_SEL,   0x08
 .set BOOT_GDT_DATA_SEL,   0x10
+.set EARLY_MAP_2M_PAGES,  512
 
 .section .multiboot, "a"
 .align 8
@@ -100,7 +101,10 @@ _start:
     orl  $0x3, %eax
     movl %eax, (early_pdpt_high + 510*8)
 
-    /* early_pd: map first 8 2MB pages (16MB) */
+    /*
+     * Map the first 1 GiB with 2 MiB pages so early PMM setup can safely touch
+     * all bootstrap-visible RAM before vmm_init() installs the full kernel map.
+     */
     movl $0, %ecx
     movl $early_pd, %edx
 1:
@@ -110,7 +114,7 @@ _start:
     movl %eax, (%edx)
     addl $8, %edx
     incl %ecx
-    cmpl $8, %ecx
+    cmpl $EARLY_MAP_2M_PAGES, %ecx
     jl   1b
 
     /* Load CR3 */
