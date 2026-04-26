@@ -403,11 +403,11 @@ GRUB_OPTS=(
 # xorriso options for BIOS+UEFI hybrid
 if [ "$UEFI" -eq 1 ] && [ -f "$ISO_STAGING/EFI/BOOT/BOOTX64.EFI" ]; then
     GRUB_OPTS+=(
-        -- -volid "CORE-OS"
-           -appid "CORE OS $VERSION"
-           -publisher "CORE Project"
-           -preparer "build-iso.sh"
-           -input-charset UTF-8
+        -volid "CORE-OS"
+        -appid "CORE OS $VERSION"
+        -publisher "CORE Project"
+        -preparer "build-iso.sh"
+        -input-charset UTF-8
     )
 fi
 
