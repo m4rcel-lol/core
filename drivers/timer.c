@@ -56,7 +56,21 @@ uint64_t kernel_uptime_ms(void) {
     return jiffies * 10;   /* 100 Hz → 10 ms per tick */
 }
 
+static void timer_spin_delay_ms(uint32_t ms) {
+    volatile uint64_t loops = (uint64_t)ms * 10000ULL;
+    while (loops--) {
+        __asm__ volatile("pause");
+    }
+}
+
 void timer_sleep_ms(uint32_t ms) {
+    extern int sched_is_started(void);
+
+    if (!current || !sched_is_started()) {
+        timer_spin_delay_ms(ms);
+        return;
+    }
+
     uint64_t ticks = (uint64_t)ms / 10 + 1;
     uint64_t wake  = jiffies + ticks;
     /* Find a free sleep slot */

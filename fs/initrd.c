@@ -51,6 +51,27 @@ static uint32_t align4(uint32_t v) {
     return (v + 3) & ~3U;
 }
 
+static int exec_if_elf(const char *path) {
+    struct inode *ino = vfs_resolve(path);
+    if (!ino) return -ENOENT;
+
+    int fd = vfs_open(path, O_RDONLY, 0);
+    if (fd < 0) return fd;
+
+    uint8_t ident[4];
+    ssize_t n = vfs_read(fd, ident, sizeof(ident));
+    vfs_close(fd);
+
+    if (n != (ssize_t)sizeof(ident) ||
+        ident[0] != 0x7fU || ident[1] != (uint8_t)'E' ||
+        ident[2] != (uint8_t)'L' || ident[3] != (uint8_t)'F') {
+        kprintf("initrd: %s is not an ELF executable; skipping\n", path);
+        return -ENOEXEC;
+    }
+
+    return proc_execve(path, NULL, NULL);
+}
+
 void initrd_mount(uint64_t initrd_addr, uint64_t initrd_size) {
     const uint8_t *p = (const uint8_t *)PHYS_TO_VIRT(initrd_addr);
     const uint8_t *end = p + initrd_size;
@@ -113,16 +134,12 @@ void initrd_mount(uint64_t initrd_addr, uint64_t initrd_size) {
     kprintf("initrd: mounted\n");
 
     /* Try to exec /sbin/init, then /bin/sh */
-    struct inode *init_ino = vfs_resolve("/sbin/init");
-    if (init_ino) {
-        proc_execve("/sbin/init", NULL, NULL);
+    if (exec_if_elf("/sbin/init") >= 0) {
         return;
     }
-    struct inode *sh_ino = vfs_resolve("/bin/sh");
-    if (sh_ino) {
-        proc_execve("/bin/sh", NULL, NULL);
+    if (exec_if_elf("/bin/sh") >= 0) {
         return;
     }
     /* No init found: create a minimal placeholder PID 1 */
-    kprintf("initrd: /sbin/init not found, no init\n");
+    kprintf("initrd: no runnable ELF init found\n");
 }

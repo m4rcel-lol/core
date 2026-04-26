@@ -33,6 +33,7 @@ extern int strncmp(const char *a, const char *b, size_t n);
 extern size_t strlen(const char *s);
 extern char *strncpy(char *dst, const char *src, size_t n);
 extern void *memset(void *dst, int c, size_t n);
+extern char __bss_end[];
 
 /* Multiboot2 structures */
 #define MB2_MAGIC_EXPECTED 0x36D76289U
@@ -438,7 +439,7 @@ static void run_builtin_command(char *line) {
     kprintf("core: unknown command: %s\n", cmd);
 }
 
-static void builtin_shell(void) {
+static void __attribute__((unused)) builtin_shell(void) {
     char line[128];
     char hostname[64];
 
@@ -585,6 +586,14 @@ void kmain(uint32_t magic, uint64_t mb2_info) {
     }
 
     /* 7. PMM */
+    uint64_t kernel_end = (uint64_t)__bss_end;
+    if (kernel_end >= KERNEL_BASE) {
+        kernel_end = VIRT_TO_PHYS(kernel_end);
+    }
+    pmm_reserve_range(0, kernel_end);
+    if (initrd_start && initrd_size) {
+        pmm_reserve_range(initrd_start, initrd_size);
+    }
     kprintf("Physical memory map:\n");
     pmm_init(mmap_entries, mmap_count);
 

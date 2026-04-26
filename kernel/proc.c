@@ -222,6 +222,10 @@ int proc_kthread(void (*fn)(void *), void *arg) {
     void *stack_phys = pmm_alloc(0);
     if (!stack_phys) { proc_free(p); return -ENOMEM; }
     uint64_t stack_top = (uint64_t)PHYS_TO_VIRT(stack_phys) + PAGE_SIZE;
+#ifndef __aarch64__
+    stack_top -= sizeof(uint64_t);
+    *(uint64_t *)stack_top = 0;
+#endif
 
     uint8_t *b = (uint8_t *)&p->ctx;
     for (size_t i = 0; i < sizeof(p->ctx); i++) b[i] = 0;

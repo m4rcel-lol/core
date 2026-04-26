@@ -18,6 +18,14 @@ extern size_t strlen(const char *s);
 /* Sanity cap on program header count */
 #define ELF_PHNUM_MAX    64U
 
+#ifdef __aarch64__
+#define ELF_MACHINE EM_AARCH64
+#define ELF_MACHINE_NAME "AArch64"
+#else
+#define ELF_MACHINE EM_X86_64
+#define ELF_MACHINE_NAME "x86-64"
+#endif
+
 /* Compile-time guard: stack must fit below USER_STACK_TOP */
 _Static_assert(ELF_STACK_PAGES > 0U, "ELF_STACK_PAGES must be > 0");
 _Static_assert((uint64_t)ELF_STACK_PAGES * PAGE_SIZE <= USER_STACK_TOP,
@@ -230,9 +238,9 @@ uint64_t elf_load(const char *path, char *argv[], char *envp[],
         ehdr.e_ident[EI_MAG3] != (uint8_t)'F' ||
         ehdr.e_ident[EI_CLASS] != ELFCLASS64    ||
         ehdr.e_ident[EI_DATA]  != ELFDATA2LSB   ||
-        ehdr.e_machine         != EM_X86_64     ||
+        ehdr.e_machine         != ELF_MACHINE   ||
         (ehdr.e_type != ET_EXEC && ehdr.e_type != ET_DYN)) {
-        kprintf("elf: not a valid x86-64 ELF64 executable\n");
+        kprintf("elf: not a valid %s ELF64 executable\n", ELF_MACHINE_NAME);
         vfs_close(fd);
         return 0;
     }

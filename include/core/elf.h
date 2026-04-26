@@ -32,6 +32,7 @@ typedef uint64_t Elf64_Xword;
 
 /* Machine architecture (e_machine) */
 #define EM_X86_64 62
+#define EM_AARCH64 183
 
 /* ELF64 file header */
 typedef struct {

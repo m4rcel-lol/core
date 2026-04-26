@@ -29,6 +29,7 @@
  *     rip    128             x30 (link register / return address)
  *
  *   Fields r12–r15 (88–119) and rflags (136) are not used on AArch64.
+ *   rdi/rsi also seed x0/x1 when entering a fresh kernel thread.
  */
 
 .text
@@ -88,5 +89,9 @@ switch_context:
     ldr  x2,  [x1, #SP_OFF]
     mov  sp,  x2               /* stack pointer */
     ldr  x30, [x1, #LR_OFF]   /* link register  */
+
+    ldr  x0,  [x1, #X24_OFF]  /* first argument  */
+    ldr  x2,  [x1, #X23_OFF]  /* second argument */
+    mov  x1,  x2
 
     ret                        /* branch to x30 */

@@ -28,6 +28,7 @@ struct mb2_mmap_entry {
 #define MB2_MMAP_AVAILABLE 1
 
 void  pmm_init(struct mb2_mmap_entry *mmap, size_t count);
+void  pmm_reserve_range(uint64_t base, uint64_t length);
 void *pmm_alloc(int order);
 void  pmm_free(void *addr, int order);
 size_t pmm_free_bytes(void);

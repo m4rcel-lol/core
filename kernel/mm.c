@@ -7,6 +7,7 @@
 
 #define PMM_MAX_ORDER 10
 #define MAX_PAGES     (1024 * 1024)   /* support up to 4 GB / 4 KB */
+#define PMM_MAX_PHYS  ((uint64_t)MAX_PAGES * PAGE_SIZE)
 #define BUDDY_MAX_BLOCKS (MAX_PAGES)
 
 struct free_block {
@@ -16,12 +17,55 @@ struct free_block {
 static struct free_block *free_list[PMM_MAX_ORDER + 1];
 static size_t total_free_pages = 0;
 
+#define PMM_RESERVED_MAX 16
+struct reserved_range {
+    uint64_t start;
+    uint64_t end;
+};
+
+static struct reserved_range reserved_ranges[PMM_RESERVED_MAX];
+static size_t reserved_count = 0;
+
 /* Bitmap to track which pages are free (for buddy coalescing) */
 static uint8_t page_bitmap[MAX_PAGES / 8];
 
-static void page_bitmap_set(size_t pfn)   { page_bitmap[pfn/8] |=  (uint8_t)(1u << (pfn%8)); }
-static void page_bitmap_clear(size_t pfn) { page_bitmap[pfn/8] &= (uint8_t)~(1u << (pfn%8)); }
-static int  page_bitmap_get(size_t pfn)   { return (page_bitmap[pfn/8] >> (pfn%8)) & 1; }
+static void page_bitmap_set(size_t pfn) {
+    if (pfn >= MAX_PAGES) return;
+    page_bitmap[pfn/8] |= (uint8_t)(1u << (pfn%8));
+}
+
+static void page_bitmap_clear(size_t pfn) {
+    if (pfn >= MAX_PAGES) return;
+    page_bitmap[pfn/8] &= (uint8_t)~(1u << (pfn%8));
+}
+
+static int page_bitmap_get(size_t pfn) {
+    if (pfn >= MAX_PAGES) return 0;
+    return (page_bitmap[pfn/8] >> (pfn%8)) & 1;
+}
+
+void pmm_reserve_range(uint64_t base, uint64_t length) {
+    if (!length || base > UINT64_MAX - length) return;
+
+    uint64_t start = ALIGN_DOWN(base, PAGE_SIZE);
+    uint64_t end   = ALIGN_UP(base + length, PAGE_SIZE);
+    if (start >= end) return;
+
+    for (size_t i = 0; i < reserved_count; i++) {
+        if (end < reserved_ranges[i].start || start > reserved_ranges[i].end) {
+            continue;
+        }
+        if (start < reserved_ranges[i].start) reserved_ranges[i].start = start;
+        if (end > reserved_ranges[i].end) reserved_ranges[i].end = end;
+        return;
+    }
+
+    if (reserved_count < PMM_RESERVED_MAX) {
+        reserved_ranges[reserved_count].start = start;
+        reserved_ranges[reserved_count].end   = end;
+        reserved_count++;
+    }
+}
 
 static void pmm_free_range(uint64_t base, uint64_t length) {
     uint64_t start = ALIGN_UP(base, PAGE_SIZE);
@@ -47,6 +91,36 @@ static void pmm_free_range(uint64_t base, uint64_t length) {
     }
 }
 
+static void pmm_free_available_range(uint64_t base, uint64_t length) {
+    if (!length || base > UINT64_MAX - length) return;
+
+    uint64_t start = ALIGN_UP(base, PAGE_SIZE);
+    uint64_t end   = ALIGN_DOWN(base + length, PAGE_SIZE);
+
+    while (start < end) {
+        int covered = 0;
+        for (size_t i = 0; i < reserved_count; i++) {
+            if (reserved_ranges[i].start <= start && start < reserved_ranges[i].end) {
+                start = reserved_ranges[i].end;
+                covered = 1;
+                break;
+            }
+        }
+        if (covered) continue;
+
+        uint64_t next_reserved = end;
+        for (size_t i = 0; i < reserved_count; i++) {
+            uint64_t rstart = reserved_ranges[i].start;
+            if (rstart > start && rstart < next_reserved) {
+                next_reserved = rstart;
+            }
+        }
+
+        pmm_free_range(start, next_reserved - start);
+        start = next_reserved;
+    }
+}
+
 void pmm_init(struct mb2_mmap_entry *mmap, size_t count) {
     for (int i = 0; i <= PMM_MAX_ORDER; i++) free_list[i] = NULL;
     for (size_t i = 0; i < sizeof(page_bitmap); i++) page_bitmap[i] = 0;
@@ -56,6 +130,9 @@ void pmm_init(struct mb2_mmap_entry *mmap, size_t count) {
         if (mmap[i].type == MB2_MMAP_AVAILABLE) {
             uint64_t base = mmap[i].base;
             uint64_t len  = mmap[i].length;
+            if (base >= PMM_MAX_PHYS) continue;
+            if (len > PMM_MAX_PHYS - base) len = PMM_MAX_PHYS - base;
+            if (!len) continue;
             /* Skip first 2 MB (kernel, VGA, etc.) */
             if (base < 0x200000) {
                 if (base + len <= 0x200000) continue;
@@ -66,7 +143,7 @@ void pmm_init(struct mb2_mmap_entry *mmap, size_t count) {
                     (unsigned long long)base,
                     (unsigned long long)(base + len),
                     (unsigned long long)(len / 1024));
-            pmm_free_range(base, len);
+            pmm_free_available_range(base, len);
         }
     }
     kprintf("PMM: %zu pages free (%zu MB)\n",
@@ -154,13 +231,29 @@ struct slab_cache {
 
 static struct slab_cache slab_caches[SLAB_CACHE_COUNT];
 
+#define KMALLOC_MAGIC_SLAB  0x534C4142U
+#define KMALLOC_MAGIC_LARGE 0x4C415247U
+
+struct kmalloc_header {
+    uint32_t magic;
+    uint16_t cache_idx;
+    uint16_t order;
+};
+
 static void slab_refill(struct slab_cache *cache) {
     void *page_phys = pmm_alloc(0);
     if (!page_phys) return;
+    int cache_idx = (int)(cache - slab_caches);
     uint8_t *page = (uint8_t *)PHYS_TO_VIRT(page_phys);
-    size_t n = PAGE_SIZE / cache->obj_size;
+    struct kmalloc_header *hdr = (struct kmalloc_header *)page;
+    hdr->magic = KMALLOC_MAGIC_SLAB;
+    hdr->cache_idx = (uint16_t)cache_idx;
+    hdr->order = 0;
+
+    size_t first = ALIGN_UP(sizeof(*hdr), cache->obj_size);
+    size_t n = (PAGE_SIZE - first) / cache->obj_size;
     for (size_t i = 0; i < n; i++) {
-        struct slab_obj *obj = (struct slab_obj *)(page + i * cache->obj_size);
+        struct slab_obj *obj = (struct slab_obj *)(page + first + i * cache->obj_size);
         obj->next = cache->free_list;
         cache->free_list = obj;
     }
@@ -188,26 +281,37 @@ void *kmalloc(size_t size) {
     }
     /* Large allocation: use buddy allocator directly */
     int order = 0;
-    size_t needed = size;
+    size_t header_size = ALIGN_UP(sizeof(struct kmalloc_header), 16U);
+    if (size > UINT64_MAX - header_size) return NULL;
+    size_t needed = size + header_size;
     while (((size_t)PAGE_SIZE << order) < needed && order < PMM_MAX_ORDER) order++;
-    return PHYS_TO_VIRT(pmm_alloc(order));
+    if (((size_t)PAGE_SIZE << order) < needed) return NULL;
+    void *page_phys = pmm_alloc(order);
+    if (!page_phys) return NULL;
+    uint8_t *page = (uint8_t *)PHYS_TO_VIRT(page_phys);
+    struct kmalloc_header *hdr = (struct kmalloc_header *)page;
+    hdr->magic = KMALLOC_MAGIC_LARGE;
+    hdr->cache_idx = UINT16_MAX;
+    hdr->order = (uint16_t)order;
+    return page + header_size;
 }
 
 void kfree(void *ptr) {
     if (!ptr) return;
-    /* Determine which slab cache owns this pointer by alignment and size */
     uint64_t vaddr = (uint64_t)ptr;
     uint64_t page_start = vaddr & ~(PAGE_SIZE - 1);
-    size_t offset = (size_t)(vaddr - page_start);
-    for (int i = 0; i < SLAB_CACHE_COUNT; i++) {
-        size_t obj_size = slab_caches[i].obj_size;
-        if (offset % obj_size == 0 && offset + obj_size <= PAGE_SIZE) {
-            struct slab_obj *obj = (struct slab_obj *)ptr;
-            obj->next = slab_caches[i].free_list;
-            slab_caches[i].free_list = obj;
-            return;
-        }
+    struct kmalloc_header *hdr = (struct kmalloc_header *)page_start;
+
+    if (hdr->magic == KMALLOC_MAGIC_SLAB && hdr->cache_idx < SLAB_CACHE_COUNT) {
+        struct slab_obj *obj = (struct slab_obj *)ptr;
+        obj->next = slab_caches[hdr->cache_idx].free_list;
+        slab_caches[hdr->cache_idx].free_list = obj;
+        return;
     }
-    /* Large allocation: return to buddy */
-    pmm_free((void *)VIRT_TO_PHYS(vaddr), 0);
+
+    if (hdr->magic == KMALLOC_MAGIC_LARGE && hdr->order <= PMM_MAX_ORDER) {
+        hdr->magic = 0;
+        pmm_free((void *)VIRT_TO_PHYS(page_start), hdr->order);
+        return;
+    }
 }

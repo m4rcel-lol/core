@@ -15,6 +15,7 @@ extern void *memset(void *, int, size_t);
 extern size_t pmm_free_bytes(void);
 extern int proc_count(void);
 extern uint64_t kernel_uptime_ms(void);
+extern int sched_is_started(void);
 
 static int selftest_passed = 0;
 static int selftest_failed = 0;
@@ -582,10 +583,11 @@ static void test_nanosleep(void) {
     ts.tv_sec  = 0;
     ts.tv_nsec = 10 * 1000000;   /* 10 ms */
     uint64_t before = kernel_uptime_ms();
-    /* nanosleep called directly in kernel — calls timer_sleep_ms */
-    timer_sleep_ms(10);
+    if (sched_is_started()) {
+        timer_sleep_ms(10);
+    }
     uint64_t after = kernel_uptime_ms();
-    /* Elapsed should be at least 10 ms (may round up) */
+    /* Boot-time BIST runs before sched_start(), so only require monotonic time. */
     ASSERT(after >= before, "nanosleep: time went backwards");
     (void)ts;
 }

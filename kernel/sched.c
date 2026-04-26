@@ -12,6 +12,7 @@ extern void switch_context(struct proc *from, struct proc *to);
 static struct proc *run_queue[PRIO_COUNT];
 static struct proc *idle_proc;
 static int sched_initialized = 0;
+static int sched_started = 0;
 static uint32_t slice_counter = 0;
 
 #define TIME_SLICE_TICKS 1   /* 10 ms per tick = 10 ms slice */
@@ -19,7 +20,12 @@ static uint32_t slice_counter = 0;
 void sched_init(void) {
     for (int i = 0; i < PRIO_COUNT; i++) run_queue[i] = NULL;
     sched_initialized = 1;
+    sched_started = 0;
     slice_counter = TIME_SLICE_TICKS;
+}
+
+int sched_is_started(void) {
+    return sched_started;
 }
 
 void sched_set_idle(struct proc *p) {
@@ -54,11 +60,11 @@ static struct proc *pick_next(void) {
 }
 
 void sched_yield(void) {
-    if (!sched_initialized) return;
+    if (!sched_initialized || !sched_started) return;
     struct proc *prev = current;
     struct proc *next = pick_next();
     if (next == prev) return;
-    if (prev && prev->state == PROC_RUNNING) {
+    if (prev && prev != idle_proc && prev->state == PROC_RUNNING) {
         prev->state = PROC_READY;
         sched_enqueue(prev);
     }
@@ -90,7 +96,7 @@ void sched_yield(void) {
 }
 
 void sched_tick(void) {
-    if (!sched_initialized) return;
+    if (!sched_initialized || !sched_started) return;
     if (slice_counter > 0) slice_counter--;
     if (slice_counter == 0) {
         slice_counter = TIME_SLICE_TICKS;
@@ -101,6 +107,7 @@ void sched_tick(void) {
 }
 
 void sched_start(void) {
+    sched_started = 1;
     /* Enable interrupts and enter idle loop */
 #ifdef __aarch64__
     __asm__ volatile("msr daifclr, #2");   /* clear IRQ mask → enable IRQs */

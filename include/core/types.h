@@ -48,6 +48,13 @@ typedef int      bool;
 #define likely(x)   __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
+#ifdef __aarch64__
+static inline void io_outb(uint16_t port, uint8_t val) { (void)port; (void)val; }
+static inline uint8_t io_inb(uint16_t port) { (void)port; return 0; }
+static inline void io_outw(uint16_t port, uint16_t val) { (void)port; (void)val; }
+static inline uint16_t io_inw(uint16_t port) { (void)port; return 0; }
+static inline void io_wait(void) {}
+#else
 static inline void io_outb(uint16_t port, uint8_t val) {
     __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
 }
@@ -67,5 +74,6 @@ static inline uint16_t io_inw(uint16_t port) {
 static inline void io_wait(void) {
     io_outb(0x80, 0);
 }
+#endif
 
 #endif /* CORE_TYPES_H */
