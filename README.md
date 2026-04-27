@@ -43,6 +43,16 @@ For ARM64 (secondary target):
 sudo apt-get install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 ```
 
+### Installing the toolchain (macOS / Apple Silicon)
+
+```bash
+brew install llvm lld qemu
+```
+
+The Makefile detects Homebrew LLVM under `/opt/homebrew/opt/llvm` or
+`/usr/local/opt/llvm`, plus Homebrew `lld`, and uses
+`clang --target=aarch64-unknown-elf` with `ld.lld` for ARM64 builds.
+
 ### Installing the toolchain (Arch Linux)
 
 The Makefile automatically falls back to native `gcc`/`ld`/`objcopy` when
@@ -107,6 +117,7 @@ make qemu-initrd
 On Apple Silicon Macs, use the ARM64 direct-QEMU path:
 
 ```bash
+brew install llvm lld qemu
 make ARCH=arm64 all
 make qemu-arm64
 ```

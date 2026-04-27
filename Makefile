@@ -6,24 +6,39 @@ ARCH    ?= x86_64
 ifeq ($(ARCH),arm64)
 
 # ── ARM64 toolchain ──────────────────────────────────────────────────────────
-ifneq ($(shell which aarch64-elf-gcc 2>/dev/null),)
+BREW_LLVM_PREFIX := $(shell brew --prefix llvm 2>/dev/null)
+BREW_LLD_PREFIX  := $(shell brew --prefix lld 2>/dev/null)
+LLVM_CLANG       := $(firstword $(wildcard $(BREW_LLVM_PREFIX)/bin/clang) $(shell command -v clang 2>/dev/null))
+LLVM_OBJCOPY     := $(firstword $(wildcard $(BREW_LLVM_PREFIX)/bin/llvm-objcopy) $(shell command -v llvm-objcopy 2>/dev/null))
+LLD              := $(firstword $(wildcard $(BREW_LLD_PREFIX)/bin/ld.lld) $(wildcard $(BREW_LLVM_PREFIX)/bin/ld.lld) $(shell command -v ld.lld 2>/dev/null))
+
+ifneq ($(shell command -v aarch64-elf-gcc 2>/dev/null),)
 CC      := aarch64-elf-gcc
 LD      := aarch64-elf-ld
 OBJCOPY := aarch64-elf-objcopy
-else
+TOOLCHAIN_TARGET :=
+else ifneq ($(shell command -v aarch64-linux-gnu-gcc 2>/dev/null),)
 CC      := aarch64-linux-gnu-gcc
 LD      := aarch64-linux-gnu-ld
 OBJCOPY := aarch64-linux-gnu-objcopy
+TOOLCHAIN_TARGET :=
+else ifneq ($(and $(LLVM_CLANG),$(LLD),$(LLVM_OBJCOPY)),)
+CC      := $(LLVM_CLANG)
+LD      := $(LLD)
+OBJCOPY := $(LLVM_OBJCOPY)
+TOOLCHAIN_TARGET := --target=aarch64-unknown-elf
+else
+$(error Missing ARM64 ELF toolchain. Install one with: brew install llvm lld qemu)
 endif
 AS      := $(CC)
 
-CFLAGS  := -Os -std=c11 -ffreestanding -fno-builtin -fno-stack-protector \
+CFLAGS  := $(TOOLCHAIN_TARGET) -Os -std=c11 -ffreestanding -fno-builtin -fno-stack-protector \
            -ffunction-sections -fdata-sections -fno-unwind-tables \
            -fno-asynchronous-unwind-tables -fno-exceptions \
-           -fomit-frame-pointer \
+           -fomit-frame-pointer -mgeneral-regs-only -mstrict-align \
            -Wall -Wextra -Werror -Iinclude
 
-ASFLAGS := -ffreestanding -Iinclude
+ASFLAGS := $(TOOLCHAIN_TARGET) -ffreestanding -Iinclude
 
 LDFLAGS := --gc-sections -T linker-arm64.ld
 
@@ -251,12 +266,16 @@ qemu-initrd: $(ELF) initrd.cpio
 	    -no-shutdown \
 	    -append "root=/dev/ram0"
 
-qemu-arm64: ARCH=arm64
-qemu-arm64: $(ELF)
+qemu-arm64:
+	@command -v qemu-system-aarch64 >/dev/null 2>&1 || { \
+	    echo "Missing qemu-system-aarch64. Install it with: brew install qemu"; \
+	    exit 1; \
+	}
+	$(MAKE) ARCH=arm64 all
 	qemu-system-aarch64 \
 	    -M virt \
 	    -cpu cortex-a57 \
-	    -kernel $(ELF) \
+	    -kernel core-arm64.elf \
 	    -serial stdio \
 	    -display none \
 	    -m 64M \
@@ -264,8 +283,8 @@ qemu-arm64: $(ELF)
 	    -no-shutdown
 
 clean:
-	rm -f $(OBJS) $(ELF) $(BIN)
-	rm -f $(if $(ISO),$(ISO)) core.iso core-arm64.elf core-arm64.bin
+	rm -f arch/x86_64/*.o arch/arm64/*.o kernel/*.o drivers/*.o fs/*.o ipc/*.o lib/*.o
+	rm -f core.elf core.bin core.iso core-arm64.elf core-arm64.bin
 	rm -f initrd.cpio initrd.cpio.gz initrd.cpio.xz
 	rm -f core.img core-arm64.img
 	rm -rf isodir

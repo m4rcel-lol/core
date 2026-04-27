@@ -14,16 +14,28 @@ _start:
     cmp x0, #2
     bne .at_el1
 
-    /* Configure EL1 from EL2 */
-    mov x0, #0x3c5        /* HCR_EL2: RW=1 (EL1 is AArch64), others 0 */
+    /* Configure EL1 from EL2. HCR_EL2.RW (bit 31) selects AArch64 EL1. */
+    movz x0, #0x8000, lsl #16
     msr hcr_el2, x0
-    mov x0, #0x3c5
+
+    /* Allow EL1 access to the physical counter/timer used by platform.c. */
+    mov x0, #0x3
+    msr cnthctl_el2, x0
+    msr cntvoff_el2, xzr
+
+    mov x0, #0x3c5        /* SPSR_EL2: masked IRQs, return to EL1h */
     msr spsr_el2, x0
     adr x0, .at_el1
     msr elr_el2, x0
     eret
 
 .at_el1:
+    /* Disable EL1 alignment checking; code is also built with -mstrict-align. */
+    mrs x0, sctlr_el1
+    bic x0, x0, #(1 << 1)
+    msr sctlr_el1, x0
+    isb
+
     /* Set up early stack */
     adrp x0, stack_top
     add  x0, x0, :lo12:stack_top

@@ -1,0 +1,12 @@
+CORE-0.1.0 booting...
+Physical memory map:
+  [MEM] 0x40800000 - 0x44000000 (57344 KB)
+PMM: 14336 pages free (56 MB)
+CORE: no initrd found
+elf: cannot open /sbin/init
+CORE: exec(/sbin/init) failed
+CORE: no runnable ELF init found; starting built-in init
+CORE: PID 1 launched (built-in init)
+CORE: running BIST...
+CORE: BIST passed (421 checks)
+CORE: init complete — idle
