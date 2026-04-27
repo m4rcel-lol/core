@@ -22,6 +22,9 @@ CORE is a monolithic kernel that implements:
 - QEMU (`qemu-system-x86_64`) for testing
 - `grub-mkrescue` + `xorriso` for ISO generation (optional)
 
+Note: bootable ISO/UEFI media are currently x86_64-only. The ARM64 target builds
+`core-arm64.elf` and boots via QEMU's direct `-kernel` path.
+
 ### Installing the toolchain (Ubuntu/Debian)
 
 ```bash
@@ -84,9 +87,14 @@ make qemu           # x86_64
 make qemu-arm64     # AArch64 (requires qemu-system-aarch64)
 ```
 
-This runs:
+The x86_64 target runs:
 ```
 qemu-system-x86_64 -kernel core.elf -serial stdio -display none -m 32M -no-reboot -no-shutdown
+```
+
+The ARM64 target runs:
+```
+qemu-system-aarch64 -M virt -cpu cortex-a57 -kernel core-arm64.elf -serial stdio -display none -m 64M -no-reboot -no-shutdown
 ```
 
 With initrd:
@@ -94,7 +102,23 @@ With initrd:
 make qemu-initrd
 ```
 
+## Apple Silicon / ARM64
+
+On Apple Silicon Macs, use the ARM64 direct-QEMU path:
+
+```bash
+make ARCH=arm64 all
+make qemu-arm64
+```
+
+VirtualBox on Apple Silicon runs ARM64 guests only. It cannot boot the x86_64
+ISO, and CORE does not yet provide an ARM64 UEFI ISO with `EFI/BOOT/BOOTAA64.EFI`.
+The VirtualBox `BdsDxe: No bootable option` screen means the firmware did not
+find an ARM64 UEFI bootloader on the attached media.
+
 ## Running on Real Hardware
+
+The current ISO path is for x86_64 BIOS/UEFI machines.
 
 1. Build `core.iso` with `make iso`
 2. Flash to USB: `dd if=core.iso of=/dev/sdX bs=4M`

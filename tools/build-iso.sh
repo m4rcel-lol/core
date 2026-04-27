@@ -10,6 +10,8 @@
 #
 # Options:
 #   --arch=x86_64|arm64     Target architecture               (default: x86_64)
+#                           ISO/UEFI boot media are currently x86_64-only;
+#                           ARM64 boots directly via qemu-system-aarch64 -kernel.
 #   --variant=debug|release|all
 #                           Build variant                      (default: release)
 #   --output=DIR            Output directory                   (default: dist/)
@@ -21,7 +23,7 @@
 #   --serial                Enable GRUB serial console in cfg
 #   --no-kernel-build       Skip kernel compilation (use existing ELF)
 #   --no-initrd             Skip initrd generation
-#   --uefi                  Embed UEFI GRUB2 stub (requires grub-efi-amd64-bin)
+#   --uefi                  Embed x86_64 UEFI GRUB2 stub (requires grub-efi-amd64-bin)
 #   --cmdline=STR           Extra kernel command-line args
 #   --sign                  Sign the ISO with gpg (requires GPG_KEY_ID env var)
 #   --quiet                 Suppress verbose output
@@ -142,6 +144,10 @@ esac
 if [ "$SKIP_INITRD" -eq 0 ] && [ "$INITRD_COMPRESS" != "none" ]; then
     warn "Compressed initrd modules are not bootable yet; using raw cpio instead"
     INITRD_COMPRESS="none"
+fi
+
+if [ "$ARCH" = "arm64" ]; then
+    die "ARM64 ISO/UEFI boot media are not supported yet. Build core-arm64.elf and boot it directly with: make qemu-arm64"
 fi
 
 # ── Version detection ─────────────────────────────────────────────────────────

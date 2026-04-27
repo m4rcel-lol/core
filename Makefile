@@ -135,7 +135,7 @@ C_OBJS  := $(C_SRCS:.c=.o)
 S_OBJS  := $(S_SRCS:.S=.o)
 OBJS    := $(S_OBJS) $(C_OBJS)
 
-.PHONY: all clean qemu qemu-initrd qemu-arm64 \
+.PHONY: all clean qemu qemu-initrd qemu-arm64 require-x86-iso \
         iso iso-release iso-debug iso-uefi iso-all img
 
 all: $(ELF)
@@ -152,13 +152,20 @@ $(ELF): $(OBJS)
 $(BIN): $(ELF)
 	$(OBJCOPY) -O binary $< $@
 
+require-x86-iso:
+	@if [ "$(ARCH)" != "x86_64" ] || [ "$(ISO_ARCH)" = "arm64" ]; then \
+	    echo "ARM64 ISO/UEFI boot media are not supported yet."; \
+	    echo "Use direct QEMU boot instead: make qemu-arm64"; \
+	    exit 1; \
+	fi
+
 initrd.cpio:
 	bash tools/mkinitrd.sh \
 	    --staging=$(ISO_STAGING) \
 	    --output=$@ \
 	    --compress=none
 
-iso: $(ELF) initrd.cpio
+iso: require-x86-iso $(ELF) initrd.cpio
 	mkdir -p isodir/boot/grub
 	cp $(ELF) isodir/boot/$(TARGET).elf
 	cp initrd.cpio isodir/boot/initrd.cpio
@@ -175,7 +182,7 @@ ISO_CMDLINE  ?=
 ISO_JOBS     ?= $(shell nproc 2>/dev/null || echo 4)
 
 # Standard release ISO (BIOS + optional UEFI, raw cpio initrd)
-iso-release: all
+iso-release: require-x86-iso all
 	bash tools/build-iso.sh \
 	    --arch=$(ISO_ARCH) \
 	    --variant=release \
@@ -186,7 +193,7 @@ iso-release: all
 	    $(if $(ISO_CMDLINE),--cmdline='$(ISO_CMDLINE)')
 
 # Debug ISO (same as release but with -g and DEBUG defined)
-iso-debug: all
+iso-debug: require-x86-iso all
 	bash tools/build-iso.sh \
 	    --arch=$(ISO_ARCH) \
 	    --variant=debug \
@@ -197,7 +204,7 @@ iso-debug: all
 	    $(if $(ISO_CMDLINE),--cmdline='$(ISO_CMDLINE)')
 
 # UEFI-capable release ISO (embeds grub-mkimage EFI stub)
-iso-uefi: all
+iso-uefi: require-x86-iso all
 	bash tools/build-iso.sh \
 	    --arch=$(ISO_ARCH) \
 	    --variant=release \
@@ -209,7 +216,7 @@ iso-uefi: all
 	    $(if $(ISO_CMDLINE),--cmdline='$(ISO_CMDLINE)')
 
 # Build both debug and release ISOs
-iso-all: all
+iso-all: require-x86-iso all
 	bash tools/build-iso.sh \
 	    --arch=$(ISO_ARCH) \
 	    --variant=all \
